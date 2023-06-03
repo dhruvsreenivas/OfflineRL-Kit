@@ -22,7 +22,7 @@ class RNNDynamics(BaseDynamics):
         self.scaler = scaler
         self.terminal_fn = terminal_fn
     
-    @ torch.no_grad()
+    @torch.no_grad()
     def step(
         self,
         obss: np.ndarray,

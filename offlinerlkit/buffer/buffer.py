@@ -2,6 +2,7 @@ import numpy as np
 import torch
 
 from typing import Optional, Union, Tuple, Dict
+from collections import defaultdict
 
 
 class ReplayBuffer:
@@ -112,4 +113,88 @@ class ReplayBuffer:
             "next_observations": self.next_observations[:self._size].copy(),
             "terminals": self.terminals[:self._size].copy(),
             "rewards": self.rewards[:self._size].copy()
+        }
+        
+
+class TrajectoryBuffer:
+    """Offline dataset of trajectories as opposed to samples."""
+    def __init__(
+        self,
+        dataset: Dict[str, np.ndarray],
+        device: str = "cpu"       
+    ) -> None:
+        self.device = torch.device(device)
+        
+        self.obs_shape = dataset["observations"].shape[1]
+        self.obs_dtype = dataset["observations"].dtype
+        self.action_dim = dataset["actions"].shape[1]
+        self.action_dtype = dataset["actions"].dtype
+        
+        # splitting into trajectories (taken from IQL repo)
+        trajs = [[]]
+        for i in range(len(dataset["observations"])):
+            trajs[-1].append(
+                (dataset["observations"][i],
+                 dataset["actions"][i],
+                 dataset["next_observations"][i],
+                 dataset["terminals"][i],
+                 dataset["rewards"][i])
+            )
+            
+            if dataset["terminals"][i] == 1.0 and i + 1 < len(dataset["observations"]):
+                trajs.append([])
+                
+        self.trajs = trajs # List[Tuple[np.ndarray]]
+        
+    @property
+    def traj_lengths(self):
+        return [len(traj) for traj in self.trajs]
+    
+    @property
+    def traj_rewards(self):
+        return [np.sum([traj[i][-1] for i in range(len(traj))]) for traj in self.trajs]
+        
+    def sample(self, num_trajs: int) -> Dict[str, np.ndarray]:
+        """
+        Samples a batch of trajectories.
+        
+        Output should be of size [num_trajs, traj_length, data_size].
+        """
+        idxs = np.random.randint(0, len(self.trajs), num_trajs)
+        length = None
+        
+        samples = defaultdict(list)
+        for idx in idxs:
+            # get the trajectory
+            traj = self.trajs[idx]
+            if length is None:
+                length = len(traj)
+            else:
+                assert len(traj) == length
+            
+            observations = np.stack(
+                [traj[i][0] for i in range(len(traj))]
+            )
+            actions = np.stack(
+                [traj[i][1] for i in range(len(traj))]
+            )
+            next_observations = np.stack(
+                [traj[i][2] for i in range(len(traj))]
+            )
+            terminals = np.stack(
+                [traj[i][3] for i in range(len(traj))]
+            )
+            rewards = np.stack(
+                [traj[i][4] for i in range(len(traj))]
+            )
+            
+            samples["observations"].append(observations)
+            samples["actions"].append(actions)
+            samples["next_observations"].append(next_observations)
+            samples["terminals"].append(terminals)
+            samples["rewards"].append(rewards)
+            
+        return {
+            k: np.stack(v)
+            for k, v in samples.items()
         }
