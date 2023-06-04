@@ -25,7 +25,7 @@ class EnsembleDynamics(BaseDynamics):
         self._penalty_coef = penalty_coef
         self._uncertainty_mode = uncertainty_mode
 
-    @ torch.no_grad()
+    @torch.no_grad()
     def step(
         self,
         obs: np.ndarray,

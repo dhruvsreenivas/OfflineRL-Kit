@@ -230,7 +230,7 @@ class TrajectoryBuffer:
                     label_1 = torch.multinomial(probs, num_samples=1).repeat(self.segment_length)
                     label_2 = 1.0 - label_1
                     label = torch.stack([label_1, label_2], dim=0)
-                    samples["preference_label"].append(label) # (2, segment_length)
+                    samples["preference_labels"].append(label) # (2, segment_length)
                 
         samples = {
             k: torch.stack(v).to(self.device) # (B, 2, segment_length, input_shape)

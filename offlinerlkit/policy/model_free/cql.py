@@ -32,7 +32,7 @@ class CQLPolicy(SACPolicy):
         with_lagrange: bool = True,
         lagrange_threshold: float = 10.0,
         cql_alpha_lr: float = 1e-4,
-        num_repeart_actions:int = 10,
+        num_repeat_actions:int = 10,
     ) -> None:
         super().__init__(
             actor,
@@ -57,7 +57,7 @@ class CQLPolicy(SACPolicy):
         self.cql_log_alpha = torch.zeros(1, requires_grad=True, device=self.actor.device)
         self.cql_alpha_optim = torch.optim.Adam([self.cql_log_alpha], lr=cql_alpha_lr)
 
-        self._num_repeat_actions = num_repeart_actions
+        self._num_repeat_actions = num_repeat_actions
 
     def calc_pi_values(
         self,
