@@ -121,80 +121,117 @@ class TrajectoryBuffer:
     def __init__(
         self,
         dataset: Dict[str, np.ndarray],
-        device: str = "cpu"       
+        segment_length: int,
+        device: str = "cpu"
     ) -> None:
         self.device = torch.device(device)
+        self.segment_length = segment_length
         
         self.obs_shape = dataset["observations"].shape[1]
         self.obs_dtype = dataset["observations"].dtype
         self.action_dim = dataset["actions"].shape[1]
         self.action_dtype = dataset["actions"].dtype
         
-        # splitting into trajectories (taken from IQL repo)
-        trajs = [[]]
+        # splitting into trajectories (taken from IQL repo) -> want to be Dict[str, List[np.ndarray]]
+        trajs = defaultdict(list)
+        
+        traj_obs = []
+        traj_acts = []
+        traj_next_obs = []
+        traj_terminals = []
+        traj_rewards = []
         for i in range(len(dataset["observations"])):
-            trajs[-1].append(
-                (dataset["observations"][i],
-                 dataset["actions"][i],
-                 dataset["next_observations"][i],
-                 dataset["terminals"][i],
-                 dataset["rewards"][i])
-            )
+            traj_obs.append(dataset["observations"][i])
+            traj_acts.append(dataset["actions"][i])
+            traj_next_obs.append(dataset["next_observations"][i])
+            traj_terminals.append(dataset["terminals"][i])
+            traj_rewards.append(dataset["rewards"][i])
             
+            # in the terminal case, add everything to the dict and reset
             if dataset["terminals"][i] == 1.0 and i + 1 < len(dataset["observations"]):
-                trajs.append([])
+                trajs["observations"].append(np.stack(traj_obs))
+                trajs["actions"].append(np.stack(traj_acts))
+                trajs["next_observations"].append(np.stack(traj_next_obs))
+                trajs["terminals"].append(np.stack(traj_terminals))
+                trajs["rewards"].append(np.stack(traj_rewards))
                 
-        self.trajs = trajs # List[Tuple[np.ndarray]]
+                # reset to collect next trajectory's data
+                traj_obs = []
+                traj_acts = []
+                traj_next_obs = []
+                traj_terminals = []
+                traj_rewards = []
+                
+        self.trajs = trajs # Dict[str, List[np.ndarray]]
+        
+    @property
+    def num_trajs(self):
+        return len(self.trajs["observations"])
         
     @property
     def traj_lengths(self):
-        return [len(traj) for traj in self.trajs]
+        return [len(traj) for traj in self.trajs["observations"]]
     
     @property
     def traj_rewards(self):
-        return [np.sum([traj[i][-1] for i in range(len(traj))]) for traj in self.trajs]
+        return [np.sum(traj_r) for traj_r in self.trajs["rewards"]]
         
-    def sample(self, num_trajs: int) -> Dict[str, np.ndarray]:
+    def sample(self, batch_size: int) -> Dict[str, torch.Tensor]:
         """
-        Samples a batch of trajectories.
+        Samples a batch of segments of trajectories.
         
-        Output should be of size [num_trajs, traj_length, data_size].
+        Output should be of size [batch_size, segment_length, input_shape].
         """
-        idxs = np.random.randint(0, len(self.trajs), num_trajs)
-        length = None
+        idxs = np.random.randint(0, self.num_trajs, batch_size) # traj indices
         
         samples = defaultdict(list)
         for idx in idxs:
-            # get the trajectory
-            traj = self.trajs[idx]
-            if length is None:
-                length = len(traj)
-            else:
-                assert len(traj) == length
+            start_idx = np.random.randint(0, self.traj_lengths[idx] - self.segment_length)
             
-            observations = np.stack(
-                [traj[i][0] for i in range(len(traj))]
-            )
-            actions = np.stack(
-                [traj[i][1] for i in range(len(traj))]
-            )
-            next_observations = np.stack(
-                [traj[i][2] for i in range(len(traj))]
-            )
-            terminals = np.stack(
-                [traj[i][3] for i in range(len(traj))]
-            )
-            rewards = np.stack(
-                [traj[i][4] for i in range(len(traj))]
-            )
-            
-            samples["observations"].append(observations)
-            samples["actions"].append(actions)
-            samples["next_observations"].append(next_observations)
-            samples["terminals"].append(terminals)
-            samples["rewards"].append(rewards)
-            
-        return {
-            k: np.stack(v)
+            for key in ["observations", "actions", "next_observations", "terminals", "rewards"]:
+                value = torch.from_numpy(self.trajs[key][idx][start_idx : start_idx + self.segment_length])
+                samples[key].append(value)
+                
+        samples = {
+            k: torch.stack(v).to(self.device)
             for k, v in samples.items()
         }
+        return samples
+    
+    def sample_pairs(self, batch_size: int, return_preference_label: bool = False) -> Dict[str, torch.Tensor]:
+        """
+        Samples a batch of pairs of segments of trajectories.
+        Optionally can return label given from BTL preference model over ground truth rewards.
+        
+        Output should be a dict, whose elements are of size [batch_size, 2, segment_length, input_shape].
+        """
+        idxs = np.random.randint(0, self.num_trajs, (batch_size, 2)) # traj indices (can be the same, but then there is no real preference)
+        
+        samples = defaultdict(list)
+        for idx1, idx2 in idxs:
+            start_idx1 = np.random.randint(0, self.traj_lengths[idx1] - self.segment_length)
+            start_idx2 = np.random.randint(0, self.traj_lengths[idx2] - self.segment_length)
+            
+            for key in ["observations", "actions", "next_observations", "terminals", "rewards"]:
+                value1 = torch.from_numpy(self.trajs[key][idx1][start_idx1 : start_idx1 + self.segment_length])
+                value2 = torch.from_numpy(self.trajs[key][idx2][start_idx2 : start_idx2 + self.segment_length])
+                
+                value = torch.stack([value1, value2], dim=0) # size (2, segment_length, input_shape), first traj is index 0, second is index 1
+                samples[key].append(value)
+                
+                if return_preference_label and key == "rewards":
+                    # compute preference label over ground truth rewards in the dataset
+                    rew1 = value1.sum()
+                    rew2 = value2.sum()
+                    one_prob = torch.sigmoid(rew1 - rew2) # this is BTL preference model
+                    
+                    # labels are consistent across all specific (segment1, segment2) data here
+                    probs = torch.tensor([1 - one_prob, one_prob])
+                    label = torch.multinomial(probs, num_samples=1).unsqueeze(0).repeat(2, self.segment_length)
+                    samples["preference_label"].append(label) # (2, segment_length)
+                
+        samples = {
+            k: torch.stack(v).to(self.device) # (B, 2, segment_length, input_shape)
+            for k, v in samples.items()
+        }
+        return samples
