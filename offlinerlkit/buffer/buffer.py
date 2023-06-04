@@ -132,7 +132,7 @@ class TrajectoryBuffer:
         self.action_dim = dataset["actions"].shape[1]
         self.action_dtype = dataset["actions"].dtype
         
-        # splitting into trajectories (taken from IQL repo) -> want to be Dict[str, List[np.ndarray]]
+        # splitting into trajectories (modified from IQL repo)
         trajs = defaultdict(list)
         
         traj_obs = []
@@ -223,11 +223,13 @@ class TrajectoryBuffer:
                     # compute preference label over ground truth rewards in the dataset
                     rew1 = value1.sum()
                     rew2 = value2.sum()
-                    one_prob = torch.sigmoid(rew1 - rew2) # this is BTL preference model
+                    one_prob = torch.sigmoid(rew1 - rew2) # this is BTL preference model, whatever comes out is the probability that the first trajectory is better.
                     
                     # labels are consistent across all specific (segment1, segment2) data here
                     probs = torch.tensor([1 - one_prob, one_prob])
-                    label = torch.multinomial(probs, num_samples=1).unsqueeze(0).repeat(2, self.segment_length)
+                    label_1 = torch.multinomial(probs, num_samples=1).repeat(self.segment_length)
+                    label_2 = 1.0 - label_1
+                    label = torch.stack([label_1, label_2], dim=0)
                     samples["preference_label"].append(label) # (2, segment_length)
                 
         samples = {
