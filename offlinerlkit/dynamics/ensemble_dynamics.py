@@ -73,7 +73,7 @@ class EnsembleDynamics(BaseDynamics):
         
         return next_obs, reward, terminal, info
     
-    @ torch.no_grad()
+    @torch.no_grad()
     def sample_next_obss(
         self,
         obs: torch.Tensor,
@@ -202,7 +202,7 @@ class EnsembleDynamics(BaseDynamics):
             losses.append(loss.item())
         return np.mean(losses)
     
-    @ torch.no_grad()
+    @torch.no_grad()
     def validate(self, inputs: np.ndarray, targets: np.ndarray) -> List[float]:
         self.model.eval()
         targets = torch.as_tensor(targets).to(self.model.device)

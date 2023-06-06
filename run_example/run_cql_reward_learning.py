@@ -10,8 +10,10 @@ import torch
 
 from offlinerlkit.nets import MLP
 from offlinerlkit.modules import ActorProb, Critic, TanhDiagGaussian, EnsembleRewardModel
+from offlinerlkit.utils.scaler import StandardScaler
+from offlinerlkit.rewards import EnsembleReward
 from offlinerlkit.utils.load_dataset import qlearning_dataset
-from offlinerlkit.buffer import ReplayBuffer
+from offlinerlkit.buffer import ReplayBuffer, TrajectoryBuffer
 from offlinerlkit.utils.logger import Logger, make_log_dirs
 from offlinerlkit.policy_trainer import MFPolicyTrainer
 from offlinerlkit.policy import CQLPolicy
@@ -59,6 +61,11 @@ def get_args():
     parser.add_argument("--n-reward_models", type=int, default=7)
     parser.add_argument("--n-elites", type=int, default=5)
     parser.add_argument("--reward-with-action", action="store_true")
+    parser.add_argument("--segment-length", type=int, default=100)
+    parser.add_argument("--load-reward-model", action="store_true")
+    parser.add_argument("--use-scaler", action="store_true")
+    parser.add_argument("--reward-penalty-coef", type=float, default=1.0)
+    parser.add_argument("--reward_batch_size", type=int, default=100)
 
     return parser.parse_args()
 
@@ -108,6 +115,18 @@ def train(args=get_args()):
     else:
         alpha = args.alpha
         
+    # logger
+    log_dirs = make_log_dirs(args.task, args.algo_name, args.seed, vars(args), record_params=["penalty_coef", "rollout_length"])
+    # key: output file name, value: output handler type
+    output_config = {
+        "consoleout_backup": "stdout",
+        "policy_training_progress": "csv",
+        "dynamics_training_progress": "csv",
+        "tb": "tensorboard"
+    }
+    logger = Logger(log_dirs, output_config)
+    logger.log_hyperparameters(vars(args))
+        
     # create reward learner
     reward_model = EnsembleRewardModel(
         obs_dim=np.prod(args.obs_shape),
@@ -122,6 +141,13 @@ def train(args=get_args()):
     reward_optim = torch.optim.Adam(
         reward_model.parameters(),
         lr=args.reward_lr
+    )
+    scaler = StandardScaler() if args.use_scaler else None
+    reward = EnsembleReward(
+        reward_model,
+        reward_optim,
+        scaler,
+        args.reward_penalty_coef
     )
 
     # create policy
@@ -145,3 +171,39 @@ def train(args=get_args()):
         cql_alpha_lr=args.cql_alpha_lr,
         num_repeart_actions=args.num_repeat_actions
     )
+    
+    # create buffers
+    traj_buffer = TrajectoryBuffer(
+        dataset,
+        args.segment_length,
+        args.device
+    )
+    cql_buffer = ReplayBuffer(
+        buffer_size=len(dataset["observations"]),
+        obs_shape=args.obs_shape,
+        obs_dtype=np.float32,
+        action_dim=args.action_dim,
+        action_dtype=np.float32,
+        device=args.device
+    )
+    cql_buffer.load_dataset(dataset)
+    
+    # policy trainer
+    policy_trainer = MFPolicyTrainer(
+        policy=policy,
+        eval_env=env,
+        buffer=cql_buffer,
+        logger=logger,
+        epoch=args.epoch,
+        step_per_epoch=args.step_per_epoch,
+        batch_size=args.batch_size,
+        eval_episodes=args.eval_episodes
+    )
+    
+    # train reward model
+    if not args.load_reward_model:
+        reward.train(traj_buffer,
+                     logger,
+                     max_epochs=1000,
+                     max_epochs_since_update=5,
+                     batch_size=args.reward_batch_size)

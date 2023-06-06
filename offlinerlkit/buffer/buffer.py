@@ -1,8 +1,9 @@
 import numpy as np
 import torch
 
-from typing import Optional, Union, Tuple, Dict
+from typing import Tuple, Dict, List
 from collections import defaultdict
+from torch.utils.data import Dataset
 
 
 class ReplayBuffer:
@@ -114,14 +115,40 @@ class ReplayBuffer:
             "terminals": self.terminals[:self._size].copy(),
             "rewards": self.rewards[:self._size].copy()
         }
+
+# =================================== PREFERENCE BASED LEARNING BUFFERS ===================================
+
+class PreferenceDataset(Dataset):
+    def __init__(self, offline_data: List[Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], int]], device: str):
+        super().__init__()
+        self.offline_data = offline_data
+        self.device = torch.device(device)
         
+    def __len__(self):
+        """Number of trajectory pairs."""
+        return len(self.offline_data)
+    
+    def __getitem__(self, idx) -> Dict[str, torch.Tensor]:
+        tau1, tau2, label = self.offline_data[idx]
+        return {
+            "observations1": torch.tensor(tau1["observations"]).to(self.device),
+            "actions1": torch.tensor(tau1["actions"]).to(self.device),
+            "next_observations1": torch.tensor(tau1["next_observations"]).to(self.device),
+            "terminals1": torch.tensor(tau1["terminals"]).to(self.device),
+            "observations2": torch.tensor(tau2["observations"]).to(self.device),
+            "actions2": torch.tensor(tau2["actions"]).to(self.device),
+            "next_observations2": torch.tensor(tau2["next_observations"]).to(self.device),
+            "terminals2": torch.tensor(tau2["terminals"]).to(self.device),
+            "label": torch.as_tensor(label).to(self.device)
+        }
+
 
 class TrajectoryBuffer:
     """Offline dataset of trajectories as opposed to samples."""
     def __init__(
         self,
         dataset: Dict[str, np.ndarray],
-        segment_length: int,
+        segment_length: int = 15,
         device: str = "cpu"
     ) -> None:
         self.device = torch.device(device)
@@ -144,7 +171,7 @@ class TrajectoryBuffer:
             traj_obs.append(dataset["observations"][i])
             traj_acts.append(dataset["actions"][i])
             traj_next_obs.append(dataset["next_observations"][i])
-            traj_terminals.append(dataset["terminals"][i])
+            traj_terminals.append(dataset["terminals"][i].astype(np.float32))
             traj_rewards.append(dataset["rewards"][i])
             
             # in the terminal case, add everything to the dict and reset
@@ -161,8 +188,39 @@ class TrajectoryBuffer:
                 traj_next_obs = []
                 traj_terminals = []
                 traj_rewards = []
-                
+        
+        # in the case we haven't added anything (i.e. there is no terminal signal) or if we've reached the end, we add the stuff in
+        if len(traj_obs) > 0:
+            trajs["observations"].append(np.stack(traj_obs))
+            trajs["actions"].append(np.stack(traj_acts))
+            trajs["next_observations"].append(np.stack(traj_next_obs))
+            trajs["terminals"].append(np.stack(traj_terminals))
+            trajs["rewards"].append(np.stack(traj_rewards))
+        
         self.trajs = trajs # Dict[str, List[np.ndarray]]
+        self.trajectory_preference_dataset = None
+        self.snippet_preference_dataset = None
+        
+    @classmethod
+    def from_trajectories(cls, trajs: Dict[str, List[np.ndarray]], segment_length: int, device: str) -> "TrajectoryBuffer":
+        observations = np.concatenate(trajs["observations"])
+        actions = np.concatenate(trajs["actions"])
+        next_observations = np.concatenate(trajs["next_observations"])
+        terminals = np.concatenate(trajs["terminals"])
+        rewards = np.concatenate(trajs["rewards"])
+        
+        dataset = dict(
+            observations=observations,
+            actions=actions,
+            next_observations=next_observations,
+            terminals=terminals,
+            rewards=rewards
+        )
+        return cls(
+            dataset,
+            segment_length,
+            device
+        )
         
     @property
     def num_trajs(self):
@@ -171,6 +229,10 @@ class TrajectoryBuffer:
     @property
     def traj_lengths(self):
         return [len(traj) for traj in self.trajs["observations"]]
+    
+    @property
+    def size(self):
+        return np.sum(self.traj_lengths)
     
     @property
     def traj_rewards(self):
@@ -226,8 +288,8 @@ class TrajectoryBuffer:
                     one_prob = torch.sigmoid(rew1 - rew2) # this is BTL preference model, whatever comes out is the probability that the first trajectory is better.
                     
                     # labels are consistent across all specific (segment1, segment2) data here
-                    probs = torch.tensor([1 - one_prob, one_prob])
-                    label_1 = torch.multinomial(probs, num_samples=1).repeat(self.segment_length)
+                    probs = torch.bernoulli(one_prob)
+                    label_1 = torch.multinomial(probs, num_samples=1).repeat(self.segment_length) # instead of sampling w prob, we can just say that the trajectory with higher reward automatically gets the good label
                     label_2 = 1.0 - label_1
                     label = torch.stack([label_1, label_2], dim=0)
                     samples["preference_labels"].append(label) # (2, segment_length)
@@ -237,3 +299,111 @@ class TrajectoryBuffer:
             for k, v in samples.items()
         }
         return samples
+        
+    def generate_trajectory_preference_dataset(self, name: str) -> None:
+        """Generates offline data of pairs of trajectories (tau_1, tau_2, label). Across all pairs of trajectories."""
+        offline_dataset = []
+        
+        # loop through data
+        for i in range(self.num_trajs):
+            obs1 = self.trajs["observations"][i]
+            act1 = self.trajs["actions"][i]
+            next_obs1 = self.trajs["next_observations"][i]
+            terminal1 = self.trajs["terminals"][i]
+            total_rew1 = np.sum(self.trajs["rewards"][i])
+            
+            print("=== FIRST TRAJ SHAPES ===")
+            print(obs1.shape)
+            print(act1.shape)
+            print(next_obs1.shape)
+            print(terminal1.shape)
+            print(total_rew1.shape)
+            
+            tau1 = dict(
+                observations=obs1,
+                actions=act1,
+                next_observations=next_obs1,
+                terminals=terminal1
+            )
+            
+            for j in range(i + 1, self.num_trajs):
+                obs2 = self.trajs["observations"][j]
+                act2 = self.trajs["actions"][j]
+                next_obs2 = self.trajs["next_observations"][j]
+                terminal2 = self.trajs["terminals"][j]
+                total_rew2 = np.sum(self.trajs["rewards"][j])
+                
+                print("=== SECOND TRAJ SHAPES ===")
+                print(obs2.shape)
+                print(act2.shape)
+                print(next_obs2.shape)
+                print(terminal2.shape)
+                print(total_rew2.shape)
+                
+                tau2 = dict(
+                    observations=obs2,
+                    actions=act2,
+                    next_observations=next_obs2,
+                    terminals=terminal2
+                )
+                
+                reward_diff = torch.tensor(total_rew1 - total_rew2)
+                label_prob = torch.sigmoid(reward_diff)
+                label = torch.bernoulli(label_prob)
+                
+                # add to dataset
+                offline_dataset.append((tau1, tau2, label))
+        
+        offline_dataset = PreferenceDataset(offline_dataset, self.device)
+        
+        # save dataset somewhere for future reference so we can load this as fixed later
+        torch.save(offline_dataset, f"~/OfflineRL-Kit/offline_data/{name}_trajectory_preference_dataset.pt")
+        
+        # set as class variable
+        self.trajectory_preference_dataset = offline_dataset
+        
+    def load_trajectory_preference_dataset(self, path: str) -> None:
+        dataset = torch.load(path, map_location=self.device)
+        self.trajectory_preference_dataset = dataset
+        
+    def generate_snippet_preference_dataset(self, name: str) -> None:
+        num_pairs = int(self.size) // self.segment_length
+        
+        datapoints = []
+        for _ in range(num_pairs):
+            # sample a pair of trajectories
+            traj_idx1 = np.random.randint(0, self.num_trajs)
+            traj_idx2 = np.random.randint(0, self.num_trajs)
+            
+            # sample snippets from each trajectory
+            start_idx1 = np.random.randint(0, self.traj_lengths[traj_idx1] - self.segment_length)
+            start_idx2 = np.random.randint(0, self.traj_lengths[traj_idx2] - self.segment_length)
+            
+            snip1 = {
+                k: v[traj_idx1][start_idx1 : start_idx1 + self.segment_length]
+                for k, v in self.trajs.items()
+            }
+            snip2 = {
+                k: v[traj_idx2][start_idx2 : start_idx2 + self.segment_length]
+                for k, v in self.trajs.items()
+            }
+            
+            # get label based off of BTL model of reward
+            rew1 = np.sum(snip1["rewards"])
+            rew2 = np.sum(snip2["rewards"])
+            diff = torch.sigmoid(torch.tensor(rew1 - rew2))
+            label = torch.bernoulli(diff) # this is the label -> 0 if 1 < 2, 1 if not
+            
+            datapoints.append((snip1, snip2, label))
+        
+        offline_dataset = PreferenceDataset(datapoints, self.device)
+        
+        # save dataset somewhere for future reference so we can load this as fixed later
+        torch.save(offline_dataset, f"/home/ds844/OfflineRL-Kit/offline_data/{name}_snippet_preference_dataset_seglen{self.segment_length}.pt")
+        
+        # set as class variable
+        self.snippet_preference_dataset = offline_dataset
+        
+    def load_snippet_preference_dataset(self, path: str) -> None:
+        dataset = torch.load(path, map_location=self.device)
+        self.snippet_preference_dataset = dataset

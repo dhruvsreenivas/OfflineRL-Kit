@@ -6,6 +6,7 @@ from typing import Dict, List, Union, Tuple, Optional
 from offlinerlkit.modules.dynamics_module import Swish
 from offlinerlkit.nets import EnsembleLinear
 
+
 class EnsembleRewardModel(nn.Module):
     """Ensemble of reward models. Uses EnsembleLinear layers provided in repository."""
     def __init__(

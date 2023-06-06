@@ -34,7 +34,7 @@ class EnsembleLinear(nn.Module):
         if len(x.shape) == 2:
             x = torch.einsum('ij,bjk->bik', x, weight)
         else:
-            x = torch.einsum('bij,bjk->bik', x, weight)
+            x = torch.einsum('cij,bjk->bcik', x, weight) # this is of shape (num_ensembles, batch_size, dims)
 
         x = x + bias
 
