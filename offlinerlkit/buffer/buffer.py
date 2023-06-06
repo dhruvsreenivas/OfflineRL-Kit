@@ -119,7 +119,7 @@ class ReplayBuffer:
 # =================================== PREFERENCE BASED LEARNING BUFFERS ===================================
 
 class PreferenceDataset(Dataset):
-    def __init__(self, offline_data: List[Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], int]], device: str):
+    def __init__(self, offline_data: List[Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], torch.Tensor]], device: str):
         super().__init__()
         self.offline_data = offline_data
         self.device = torch.device(device)
@@ -131,17 +131,29 @@ class PreferenceDataset(Dataset):
     def __getitem__(self, idx) -> Dict[str, torch.Tensor]:
         tau1, tau2, label = self.offline_data[idx]
         return {
-            "observations1": torch.tensor(tau1["observations"]).to(self.device),
-            "actions1": torch.tensor(tau1["actions"]).to(self.device),
-            "next_observations1": torch.tensor(tau1["next_observations"]).to(self.device),
-            "terminals1": torch.tensor(tau1["terminals"]).to(self.device),
-            "observations2": torch.tensor(tau2["observations"]).to(self.device),
-            "actions2": torch.tensor(tau2["actions"]).to(self.device),
-            "next_observations2": torch.tensor(tau2["next_observations"]).to(self.device),
-            "terminals2": torch.tensor(tau2["terminals"]).to(self.device),
-            "label": torch.as_tensor(label).to(self.device)
+            "observations1": torch.from_numpy(tau1["observations"]).to(self.device),
+            "actions1": torch.from_numpy(tau1["actions"]).to(self.device),
+            "next_observations1": torch.from_numpy(tau1["next_observations"]).to(self.device),
+            "terminals1": torch.from_numpy(tau1["terminals"]).to(self.device),
+            "observations2": torch.from_numpy(tau2["observations"]).to(self.device),
+            "actions2": torch.from_numpy(tau2["actions"]).to(self.device),
+            "next_observations2": torch.from_numpy(tau2["next_observations"]).to(self.device),
+            "terminals2": torch.from_numpy(tau2["terminals"]).to(self.device),
+            "label": label.to(self.device)
         }
 
+
+def filter(dataset: PreferenceDataset, idxs: list) -> PreferenceDataset:
+    dps = [dataset[idx] for idx in idxs]
+    keys = list(dps[0].keys())
+    
+    # make a list of the specific segment dicts
+    snips1 = [{k[:-1]: dp[k] for k in keys if (k != "label" and k.endswith("1"))} for dp in dps]
+    snips2 = [{k[:-1]: dp[k] for k in keys if (k != "label" and k.endswith("2"))} for dp in dps]
+    labels = [dp["label"] for dp in dps]
+    
+    tups = [(snip1, snip2, label) for snip1, snip2, label in zip(snips1, snips2, labels)]
+    return PreferenceDataset(tups, device=dataset.device)
 
 class TrajectoryBuffer:
     """Offline dataset of trajectories as opposed to samples."""

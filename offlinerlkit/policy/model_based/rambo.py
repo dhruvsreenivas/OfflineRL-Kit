@@ -139,7 +139,7 @@ class RAMBOPolicy(MOPOPolicy):
         obs_act = self.dynamics.scaler.transform(obs_act)
         diff_mean, logvar = self.dynamics.model(obs_act)
         observations = torch.from_numpy(observations).to(diff_mean.device)
-        diff_obs, diff_reward = torch.split(diff_mean, [diff_mean.shape[-1]-1, 1], dim=-1)
+        diff_obs, diff_reward = torch.split(diff_mean, [diff_mean.shape[-1] - 1, 1], dim=-1)
         mean = torch.cat([diff_obs + observations, diff_reward], dim=-1)
         std = torch.sqrt(torch.exp(logvar))
         

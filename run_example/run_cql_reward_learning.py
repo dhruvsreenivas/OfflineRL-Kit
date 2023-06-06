@@ -7,13 +7,12 @@ import d4rl
 import numpy as np
 import torch
 
-
 from offlinerlkit.nets import MLP
 from offlinerlkit.modules import ActorProb, Critic, TanhDiagGaussian, EnsembleRewardModel
 from offlinerlkit.utils.scaler import StandardScaler
 from offlinerlkit.rewards import EnsembleReward
 from offlinerlkit.utils.load_dataset import qlearning_dataset
-from offlinerlkit.buffer import ReplayBuffer, TrajectoryBuffer
+from offlinerlkit.buffer import ReplayBuffer
 from offlinerlkit.utils.logger import Logger, make_log_dirs
 from offlinerlkit.policy_trainer import MFPolicyTrainer
 from offlinerlkit.policy import CQLPolicy
@@ -26,7 +25,7 @@ cql-weight=5.0, temperature=1.0 for all D4RL-Gym tasks
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--algo-name", type=str, default="cql")
+    parser.add_argument("--algo-name", type=str, default="cql-pref")
     parser.add_argument("--task", type=str, default="hopper-medium-v2")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--hidden-dims", type=int, nargs='*', default=[256, 256, 256])
@@ -61,8 +60,8 @@ def get_args():
     parser.add_argument("--n-reward_models", type=int, default=7)
     parser.add_argument("--n-elites", type=int, default=5)
     parser.add_argument("--reward-with-action", action="store_true")
-    parser.add_argument("--segment-length", type=int, default=100)
-    parser.add_argument("--load-reward-model", action="store_true")
+    parser.add_argument("--segment-length", type=int, default=15)
+    parser.add_argument("--load-reward-path", type=str, default=None)
     parser.add_argument("--use-scaler", action="store_true")
     parser.add_argument("--reward-penalty-coef", type=float, default=1.0)
     parser.add_argument("--reward_batch_size", type=int, default=100)
@@ -121,11 +120,10 @@ def train(args=get_args()):
     output_config = {
         "consoleout_backup": "stdout",
         "policy_training_progress": "csv",
-        "dynamics_training_progress": "csv",
+        "reward_training_progress": "csv",
         "tb": "tensorboard"
     }
     logger = Logger(log_dirs, output_config)
-    logger.log_hyperparameters(vars(args))
         
     # create reward learner
     reward_model = EnsembleRewardModel(
@@ -149,6 +147,8 @@ def train(args=get_args()):
         scaler,
         args.reward_penalty_coef
     )
+    if args.load_reward_path:
+        reward.load(args.load_reward_path)
 
     # create policy
     policy = CQLPolicy(
@@ -173,11 +173,8 @@ def train(args=get_args()):
     )
     
     # create buffers
-    traj_buffer = TrajectoryBuffer(
-        dataset,
-        args.segment_length,
-        args.device
-    )
+    dataset_path = f"~/OfflineRL-Kit/offline_data/{args.task}_snippet_preference_dataset_seglen{args.segment_length}.pt"
+    pref_dataset = torch.load(dataset_path)
     cql_buffer = ReplayBuffer(
         buffer_size=len(dataset["observations"]),
         obs_shape=args.obs_shape,
@@ -187,7 +184,7 @@ def train(args=get_args()):
         device=args.device
     )
     cql_buffer.load_dataset(dataset)
-    
+
     # policy trainer
     policy_trainer = MFPolicyTrainer(
         policy=policy,
@@ -201,9 +198,24 @@ def train(args=get_args()):
     )
     
     # train reward model
-    if not args.load_reward_model:
-        reward.train(traj_buffer,
-                     logger,
-                     max_epochs=1000,
-                     max_epochs_since_update=5,
-                     batch_size=args.reward_batch_size)
+    if not args.load_reward_path:
+        reward.train(
+            pref_dataset,
+            logger,
+            max_epochs=1000,
+            max_epochs_since_update=5,
+            batch_size=args.reward_batch_size
+        )
+        
+    # relabel all points in replay buffer with reward (see if you can do all at once, if not do by batch)
+    new_reward = reward.get_reward(
+        cql_buffer.observations,
+        cql_buffer.actions
+    )
+    cql_buffer.rewards = new_reward.squeeze()
+    
+    # now run CQL on the new buffer
+    policy_trainer.train()
+    
+if __name__ == '__main__':
+    train()
