@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from typing import Tuple, Dict, List
+from typing import Tuple, Dict, List, Union
 from collections import defaultdict
 from torch.utils.data import Dataset
 
@@ -131,17 +131,44 @@ class PreferenceDataset(Dataset):
     def __getitem__(self, idx) -> Dict[str, torch.Tensor]:
         tau1, tau2, label = self.offline_data[idx]
         return {
-            "observations1": torch.from_numpy(tau1["observations"]).to(self.device),
-            "actions1": torch.from_numpy(tau1["actions"]).to(self.device),
-            "next_observations1": torch.from_numpy(tau1["next_observations"]).to(self.device),
-            "terminals1": torch.from_numpy(tau1["terminals"]).to(self.device),
-            "observations2": torch.from_numpy(tau2["observations"]).to(self.device),
-            "actions2": torch.from_numpy(tau2["actions"]).to(self.device),
-            "next_observations2": torch.from_numpy(tau2["next_observations"]).to(self.device),
-            "terminals2": torch.from_numpy(tau2["terminals"]).to(self.device),
-            "label": label.to(self.device)
+            "observations1": maybe_to_torch(tau1["observations"], self.device),
+            "actions1": maybe_to_torch(tau1["actions"], self.device),
+            "next_observations1": maybe_to_torch(tau1["next_observations"], self.device),
+            "terminals1": maybe_to_torch(tau1["terminals"], self.device),
+            "observations2": maybe_to_torch(tau2["observations"], self.device),
+            "actions2": maybe_to_torch(tau2["actions"], self.device),
+            "next_observations2": maybe_to_torch(tau2["next_observations"], self.device),
+            "terminals2": maybe_to_torch(tau2["terminals"], self.device),
+            "label": maybe_to_torch(label, self.device)
         }
-
+        
+    def sample(self, batch_size: int) -> Dict[str, torch.Tensor]:
+        """Samples a batch of stuff randomly from the dataset."""
+        assert batch_size > 0, "batch_size <= 0 is bad"
+        idxs = np.random.randint(0, len(self.offline_data), batch_size)
+        dps = [self[idx] for idx in idxs]
+        batch = {
+            k: torch.stack([dp[k] for dp in dps])
+            for k in list(dps[0].keys())
+        }
+        return batch
+        
+    def statistics(self, eps: float = 1e-3) -> Tuple[np.ndarray, np.ndarray]:
+        """Gets mean and std ALL (obs, actions) inputs (from both tau1 and tau2)."""
+        obs1 = torch.cat([maybe_to_torch(tau1["observations"], 'cpu') for tau1, _, _ in self.offline_data])
+        acts1 = torch.cat([maybe_to_torch(tau1["actions"], 'cpu') for tau1, _, _ in self.offline_data])
+        obs2 = torch.cat([maybe_to_torch(tau2["observations"], 'cpu') for _, tau2, _ in self.offline_data])
+        acts2 = torch.cat([maybe_to_torch(tau2["actions"], 'cpu') for _, tau2, _ in self.offline_data])
+        obs_actions1 = torch.cat([obs1, acts1], dim=-1)
+        obs_actions2 = torch.cat([obs2, acts2], dim=-1)
+        
+        obs_actions = torch.cat([obs_actions1, obs_actions2], dim=0)
+        mean = obs_actions.mean(dim=0, keepdim=True)
+        std = obs_actions.std(dim=0, keepdim=True) + eps
+        
+        # delete everything that is not necessary
+        del obs1, acts1, obs2, acts2, obs_actions1, obs_actions2, obs_actions
+        return mean.cpu().numpy(), std.cpu().numpy()
 
 def filter(dataset: PreferenceDataset, idxs: list) -> PreferenceDataset:
     dps = [dataset[idx] for idx in idxs]
@@ -154,6 +181,13 @@ def filter(dataset: PreferenceDataset, idxs: list) -> PreferenceDataset:
     
     tups = [(snip1, snip2, label) for snip1, snip2, label in zip(snips1, snips2, labels)]
     return PreferenceDataset(tups, device=dataset.device)
+
+
+def maybe_to_torch(x: Union[np.ndarray, torch.Tensor], device: Union[str, torch.device]) -> torch.Tensor:
+    if isinstance(x, np.ndarray):
+        x = torch.from_numpy(x)
+    return x.to(device)
+
 
 class TrajectoryBuffer:
     """Offline dataset of trajectories as opposed to samples."""
@@ -379,6 +413,8 @@ class TrajectoryBuffer:
         self.trajectory_preference_dataset = dataset
         
     def generate_snippet_preference_dataset(self, name: str) -> None:
+        # if there is something hella small in the dataset (smaller than segment length), then we use that
+        self.segment_length = min(self.segment_length, min(self.traj_lengths))
         num_pairs = int(self.size) // self.segment_length
         
         datapoints = []
@@ -388,8 +424,8 @@ class TrajectoryBuffer:
             traj_idx2 = np.random.randint(0, self.num_trajs)
             
             # sample snippets from each trajectory
-            start_idx1 = np.random.randint(0, self.traj_lengths[traj_idx1] - self.segment_length)
-            start_idx2 = np.random.randint(0, self.traj_lengths[traj_idx2] - self.segment_length)
+            start_idx1 = np.random.randint(0, self.traj_lengths[traj_idx1] - self.segment_length) if self.traj_lengths[traj_idx1] > self.segment_length else 0
+            start_idx2 = np.random.randint(0, self.traj_lengths[traj_idx2] - self.segment_length) if self.traj_lengths[traj_idx2] > self.segment_length else 0
             
             snip1 = {
                 k: v[traj_idx1][start_idx1 : start_idx1 + self.segment_length]

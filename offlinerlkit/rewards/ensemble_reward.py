@@ -96,7 +96,7 @@ class EnsembleReward(BaseReward):
         epoch = 0
         cnt = 0
         holdout_losses = [1e10 for i in range(self.model.num_ensemble)]
-        logger.log("Training reward:")
+        logger.log("======== Training reward... ========")
         while True:
             epoch += 1
             train_loss = self.learn(train_dataloader)
@@ -140,13 +140,15 @@ class EnsembleReward(BaseReward):
         self.model.train()
         losses = []
         for batch in dataloader:
-            ensemble_pred_rew1 = self.model(batch["observations1"], batch["actions1"]).sum(2).squeeze() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
-            ensemble_pred_rew2 = self.model(batch["observations2"], batch["actions2"]).sum(2).squeeze() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
+            ensemble_pred_rew1 = self.model(batch["observations1"], batch["actions1"]).sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
+            ensemble_pred_rew2 = self.model(batch["observations2"], batch["actions2"]).sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
+            # print(f"rew1, rew2 ensemble shapes: {ensemble_pred_rew1.shape, ensemble_pred_rew2.shape}")
             
             ensemble_pred_rewsum = ensemble_pred_rew1 + ensemble_pred_rew2
-            label_preds = ensemble_pred_rew1 / (ensemble_pred_rewsum + 1e-8) # for normalization
+            label_preds = ensemble_pred_rew1 / ensemble_pred_rewsum # for normalization it is not necessary cuz everything is > 0
+            # print(f"label shape: {label_preds.shape}")
             
-            label_gt = batch["label"].unsqueeze(0).repeat(self.model.num_ensemble, 1) # (n_ensemble, batch_size)
+            label_gt = batch["label"].tile(self.model.num_ensemble, 1) # (n_ensemble, batch_size), labels need to be the same for each ensemble (i.e. label_gt[i] == label_gt[j] for all i, j)
             loss = F.binary_cross_entropy(label_preds, label_gt)
         
             # training step
@@ -155,6 +157,9 @@ class EnsembleReward(BaseReward):
             self.optim.step()
             
             losses.append(loss.item())
+            
+            # delete batch?
+            del batch
         
         return np.mean(losses)
     
@@ -164,15 +169,18 @@ class EnsembleReward(BaseReward):
         total_loss = 0.0
 
         for batch in val_dataloader:
-            ensemble_pred_rew1 = self.model(batch["observations1"], batch["actions1"]).sum(2).squeeze() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
-            ensemble_pred_rew2 = self.model(batch["observations2"], batch["actions2"]).sum(2).squeeze() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
+            ensemble_pred_rew1 = self.model(batch["observations1"], batch["actions1"]).sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
+            ensemble_pred_rew2 = self.model(batch["observations2"], batch["actions2"]).sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
             
             ensemble_pred_rewsum = ensemble_pred_rew1 + ensemble_pred_rew2
-            label_preds = ensemble_pred_rew1 / (ensemble_pred_rewsum + 1e-8) # for normalization
+            label_preds = ensemble_pred_rew1 / ensemble_pred_rewsum # for normalization
             
-            label_gt = batch["label"].unsqueeze(0).repeat(self.model.num_ensemble, 1) # (n_ensemble, batch_size)
-            loss = F.binary_cross_entropy(label_preds, label_gt)
+            label_gt = batch["label"].tile(self.model.num_ensemble, 1) # (n_ensemble, batch_size)
+            loss = F.binary_cross_entropy(label_preds, label_gt, reduction='none').mean(-1) # (n_ensemble)
             total_loss += loss
+            
+            # delete batch to save memory?
+            del batch
         
         val_loss = list(total_loss.cpu().numpy())
         return val_loss

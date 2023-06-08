@@ -19,6 +19,7 @@ class EnsembleRewardModel(nn.Module):
         activation: nn.Module = Swish,
         with_action: bool = True,
         weight_decays: Optional[Union[List[float], Tuple[float]]] = None,
+        dropout_prob: float = 0.0,
         device: str = "cpu"
     ) -> None:
         super().__init__()
@@ -32,13 +33,16 @@ class EnsembleRewardModel(nn.Module):
         if weight_decays is not None:
             assert len(weight_decays) == (len(hidden_dims) + 1)
         
-        # create models (here we default have no weight decay, just like MILO and stuff)
+        # create layers (here we default have no weight decay, just like MILO and stuff)
         module_list = []
         dims = [obs_dim + (action_dim if with_action else 0)] + list(hidden_dims)
         if weight_decays is None:
             weight_decays = [0.0] * (len(hidden_dims) + 1)
+        
         for in_dim, out_dim, weight_decay in zip(dims[:-1], dims[1:], weight_decays[:-1]):
             module_list.append(EnsembleLinear(in_dim, out_dim, num_ensemble, weight_decay))
+            if dropout_prob:
+                module_list.append(nn.Dropout(p=dropout_prob))
         self.backbones = nn.ModuleList(module_list)
         
         # this is binary classification trained with MLE, so 1 output for the positive logit

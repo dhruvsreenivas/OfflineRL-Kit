@@ -39,6 +39,7 @@ class EnsembleDynamicsModel(nn.Module):
         activation: nn.Module = Swish,
         weight_decays: Optional[Union[List[float], Tuple[float]]] = None,
         with_reward: bool = True,
+        dropout_prob: float = 0.0,
         device: str = "cpu"
     ) -> None:
         super().__init__()
@@ -59,6 +60,9 @@ class EnsembleDynamicsModel(nn.Module):
             weight_decays = [0.0] * (len(hidden_dims) + 1)
         for in_dim, out_dim, weight_decay in zip(hidden_dims[:-1], hidden_dims[1:], weight_decays[:-1]):
             module_list.append(EnsembleLinear(in_dim, out_dim, num_ensemble, weight_decay))
+            if dropout_prob:
+                module_list.append(nn.Dropout(p=dropout_prob))
+        
         self.backbones = nn.ModuleList(module_list)
 
         self.output_layer = EnsembleLinear(
@@ -67,6 +71,7 @@ class EnsembleDynamicsModel(nn.Module):
             num_ensemble,
             weight_decays[-1]
         )
+        self.use_dropout = dropout_prob > 0
 
         self.register_parameter(
             "max_logvar",
@@ -88,7 +93,14 @@ class EnsembleDynamicsModel(nn.Module):
         obs_action = torch.as_tensor(obs_action, dtype=torch.float32).to(self.device)
         output = obs_action
         for layer in self.backbones:
-            output = self.activation(layer(output))
+            output = layer(output)
+            if self.use_dropout:
+                # only do activation after dropout
+                if isinstance(layer, nn.Dropout):
+                    output = self.activation(output)
+            else:
+                output = self.activation(output)
+        
         mean, logvar = torch.chunk(self.output_layer(output), 2, dim=-1)
         logvar = soft_clamp(logvar, self.min_logvar, self.max_logvar)
         return mean, logvar
@@ -108,6 +120,121 @@ class EnsembleDynamicsModel(nn.Module):
         for layer in self.backbones:
             decay_loss += layer.get_decay_loss()
         decay_loss += self.output_layer.get_decay_loss()
+        return decay_loss
+
+    def set_elites(self, indexes: List[int]) -> None:
+        assert len(indexes) <= self.num_ensemble and max(indexes) < self.num_ensemble
+        self.register_parameter('elites', nn.Parameter(torch.tensor(indexes), requires_grad=False))
+    
+    def random_elite_idxs(self, batch_size: int) -> np.ndarray:
+        idxs = np.random.choice(self.elites.data.cpu().numpy(), size=batch_size)
+        return idxs
+    
+    
+class EnsembleDynamicsModelWithSeparateReward(nn.Module):
+    """Separate reward head for BCE loss as opposed to Gaussian MLE."""
+    def __init__(
+        self,
+        obs_dim: int,
+        action_dim: int,
+        hidden_dims: Union[List[int], Tuple[int]],
+        num_ensemble: int = 7,
+        num_elites: int = 5,
+        activation: nn.Module = Swish,
+        weight_decays: Optional[Union[List[float], Tuple[float]]] = None,
+        dropout_prob: float = 0.0,
+        device: str = "cpu"
+    ) -> None:
+        super().__init__()
+
+        self.num_ensemble = num_ensemble
+        self.num_elites = num_elites
+        self.device = torch.device(device)
+
+        self.activation = activation()
+
+        if weight_decays is not None:
+            assert len(weight_decays) == (len(hidden_dims) + 1)
+
+        module_list = []
+        hidden_dims = [obs_dim+action_dim] + list(hidden_dims)
+        if weight_decays is None:
+            weight_decays = [0.0] * (len(hidden_dims) + 1)
+        
+        for in_dim, out_dim, weight_decay in zip(hidden_dims[:-1], hidden_dims[1:], weight_decays[:-1]):
+            module_list.append(EnsembleLinear(in_dim, out_dim, num_ensemble, weight_decay))
+            if dropout_prob:
+                module_list.append(nn.Dropout(p=dropout_prob))
+        
+        self.backbones = nn.ModuleList(module_list)
+
+        # gaussian parameters
+        self.next_state_layer = EnsembleLinear(
+            hidden_dims[-1],
+            2 * obs_dim,
+            num_ensemble,
+            weight_decays[-1]
+        )
+        self.reward_layer = EnsembleLinear(
+            hidden_dims[-1],
+            1,
+            num_ensemble,
+            weight_decays[-1]
+        )
+        self.use_dropout = dropout_prob > 0
+
+        # min and max logvar only matter in obs dim case (Gaussian)
+        self.register_parameter(
+            "max_logvar",
+            nn.Parameter(torch.ones(obs_dim) * 0.5, requires_grad=True)
+        )
+        self.register_parameter(
+            "min_logvar",
+            nn.Parameter(torch.ones(obs_dim) * -10, requires_grad=True)
+        )
+
+        self.register_parameter(
+            "elites",
+            nn.Parameter(torch.tensor(list(range(0, self.num_elites))), requires_grad=False)
+        )
+
+        self.to(self.device)
+
+    def forward(self, obs_action: np.ndarray) -> Tuple[torch.Tensor, torch.Tensor]:
+        obs_action = torch.as_tensor(obs_action, dtype=torch.float32).to(self.device)
+        output = obs_action
+        for layer in self.backbones:
+            output = layer(output)
+            if self.use_dropout:
+                # only do activation after dropout
+                if isinstance(layer, nn.Dropout):
+                    output = self.activation(output)
+            else:
+                output = self.activation(output)
+            
+        sp_mean, sp_logvar = torch.chunk(self.next_state_layer(output), 2, dim=-1)
+        reward = self.reward_layer(output)
+        sp_logvar = soft_clamp(sp_logvar, self.min_logvar, self.max_logvar)
+        return sp_mean, sp_logvar, reward
+
+    def load_save(self) -> None:
+        for layer in self.backbones:
+            layer.load_save()
+        self.next_state_layer.load_save()
+        self.reward_layer.load_save()
+
+    def update_save(self, indexes: List[int]) -> None:
+        for layer in self.backbones:
+            layer.update_save(indexes)
+        self.next_state_layer.update_save(indexes)
+        self.reward_layer.update_save(indexes)
+    
+    def get_decay_loss(self) -> torch.Tensor:
+        decay_loss = 0
+        for layer in self.backbones:
+            decay_loss += layer.get_decay_loss()
+        decay_loss += self.next_state_layer.get_decay_loss()
+        decay_loss += self.reward_layer.get_decay_loss()
         return decay_loss
 
     def set_elites(self, indexes: List[int]) -> None:

@@ -212,7 +212,7 @@ def train(args=get_args()):
 
     # train
     if not load_dynamics_model:
-        dynamics.train(real_buffer.sample_all(), logger, max_epochs_since_update=5)
+        dynamics.train(real_buffer.sample_all(), None, logger, max_epochs_since_update=5)
     
     policy_trainer.train()
 

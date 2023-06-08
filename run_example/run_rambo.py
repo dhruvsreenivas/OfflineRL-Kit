@@ -37,7 +37,7 @@ walker2d-medium-expert-v2: rollout-length=2, adv-weight=3e-4
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--algo-name", type=str, default="rambo")
-    parser.add_argument("--task", type=str, default="hopper-medium-v2")
+    parser.add_argument("--task", type=str, default="hopper-medium-expert-v2")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--actor-lr", type=float, default=1e-4)
     parser.add_argument("--critic-lr", type=float, default=3e-4)
@@ -173,9 +173,8 @@ def train(args=get_args()):
         termination_fn,
     )
 
-    policy_scaler = StandardScaler(mu=obs_mean, std=obs_std)
-
     # create policy
+    policy_scaler = StandardScaler(mu=obs_mean, std=obs_std)
     policy = RAMBOPolicy(
         dynamics, 
         actor, 
@@ -230,11 +229,13 @@ def train(args=get_args()):
         policy.to(args.device)
     else:
         policy.pretrain(real_buffer.sample_all(), args.bc_epoch, args.bc_batch_size, args.bc_lr, logger)
+    
     if args.load_dynamics_path:
         dynamics.load(args.load_dynamics_path)
     else:
         dynamics.train(
             real_buffer.sample_all(),
+            None,
             logger,
             holdout_ratio=0.1,
             logvar_loss_coef=0.001,

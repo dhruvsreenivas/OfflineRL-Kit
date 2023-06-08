@@ -12,15 +12,15 @@ import torch
 
 
 from offlinerlkit.nets import MLP
-from offlinerlkit.modules import ActorProb, Critic, TanhDiagGaussian, EnsembleDynamicsModel, EnsembleRewardModel
+from offlinerlkit.modules import ActorProb, Critic, TanhDiagGaussian, EnsembleDynamicsModelWithSeparateReward
 from offlinerlkit.dynamics import EnsembleDynamics
 from offlinerlkit.rewards import EnsembleReward
 from offlinerlkit.utils.scaler import StandardScaler
 from offlinerlkit.utils.termination_fns import get_termination_fn, obs_unnormalization
 from offlinerlkit.buffer import ReplayBuffer
 from offlinerlkit.utils.logger import Logger, make_log_dirs
-from offlinerlkit.policy_trainer import MBPolicyTrainer
-from offlinerlkit.policy import RAMBOPolicy, RAMBORewardLearningPolicy
+from offlinerlkit.policy_trainer import MBPolicyTrainer, PrefMBPolicyTrainer
+from offlinerlkit.policy import RAMBOPolicy, RAMBORewardLearningSharedPolicy
 
 
 """
@@ -91,11 +91,11 @@ def get_args():
     parser.add_argument("--n-reward-elites", type=int, default=5)
     parser.add_argument("--reward-with-action", action="store_true")
     parser.add_argument("--segment-length", type=int, default=15)
-    parser.add_argument("--load-reward-path", type=str, default=None)
     parser.add_argument("--use-reward-scaler", action="store_true")
     parser.add_argument("--reward-penalty-coef", type=float, default=1.0)
     parser.add_argument("--reward_batch_size", type=int, default=100)
     parser.add_argument("--reward-uncertainty-mode", type=str, default="aleatoric")
+    parser.add_argument("--dropout-prob", type=float, default=0.2)
 
     return parser.parse_args()
 
@@ -149,7 +149,6 @@ def train(args=get_args()):
     dataset_path = f"/home/{args.netid}/OfflineRL-Kit/offline_data/{args.task}_snippet_preference_dataset_seglen{args.segment_length}.pt"
     pref_dataset = torch.load(dataset_path)
     pref_dataset.device = args.device
-    oa_mean, oa_std = pref_dataset.statistics()
     
     real_buffer = ReplayBuffer(
         buffer_size=len(dataset["observations"]),
@@ -172,13 +171,14 @@ def train(args=get_args()):
     )
     
     # create dynamics
-    dynamics_model = EnsembleDynamicsModel(
+    dynamics_model = EnsembleDynamicsModelWithSeparateReward(
         obs_dim=np.prod(args.obs_shape),
         action_dim=args.action_dim,
         hidden_dims=args.dynamics_hidden_dims,
         num_ensemble=args.n_ensemble,
         num_elites=args.n_elites,
         weight_decays=args.dynamics_weight_decay,
+        dropout_prob=args.dropout_prob,
         device=args.device
     )
     dynamics_optim = torch.optim.Adam(
@@ -191,45 +191,18 @@ def train(args=get_args()):
     )
     dynamics_scaler = StandardScaler()
     termination_fn = obs_unnormalization(get_termination_fn(task=args.task), obs_mean, obs_std)
-    dynamics = EnsembleDynamics(
+    dynamics_and_reward = EnsembleDynamics(
         dynamics_model,
         dynamics_optim,
         dynamics_scaler,
         termination_fn,
     )
     
-    # create reward learner
-    reward_model = EnsembleRewardModel(
-        obs_dim=np.prod(args.obs_shape),
-        action_dim=args.action_dim,
-        hidden_dims=args.reward_hidden_dims,
-        num_ensemble=args.n_ensemble,
-        num_elites=args.n_elites,
-        with_action=args.reward_with_action,
-        weight_decays=args.reward_weight_decay,
-        device=args.device
-    )
-    reward_optim = torch.optim.Adam(
-        reward_model.parameters(),
-        lr=args.reward_lr
-    )
-    reward_scaler = StandardScaler(mu=oa_mean, std=oa_std) if args.use_reward_scaler else None
-    reward = EnsembleReward(
-        reward_model,
-        reward_optim,
-        reward_scaler,
-        args.reward_penalty_coef,
-        args.reward_uncertainty_mode
-    )
-    if args.load_reward_path:
-        reward.load(args.load_reward_path)
-    
     # create policy
     policy_scaler = StandardScaler(mu=obs_mean, std=obs_std)
     if args.train_w_reward_learning:
-        policy = RAMBORewardLearningPolicy(
-            dynamics,
-            reward,
+        policy = RAMBORewardLearningSharedPolicy(
+            dynamics_and_reward,
             actor,
             critic1,
             critic2,
@@ -237,7 +210,6 @@ def train(args=get_args()):
             critic1_optim, 
             critic2_optim, 
             dynamics_adv_optim,
-            reward_optim,
             tau=args.tau, 
             gamma=args.gamma, 
             alpha=alpha, 
@@ -250,7 +222,7 @@ def train(args=get_args()):
         ).to(args.device)
     else:
         policy = RAMBOPolicy(
-            dynamics, 
+            dynamics_and_reward, 
             actor, 
             critic1, 
             critic2, 
@@ -297,29 +269,19 @@ def train(args=get_args()):
         real_ratio=args.real_ratio,
         eval_episodes=args.eval_episodes
     )
-    
-    # first train reward model if needed
-    if not args.load_reward_path:
-        reward.train(
-            pref_dataset,
-            logger,
-            max_epochs=1000,
-            max_epochs_since_update=5,
-            batch_size=args.reward_batch_size
-        )
 
-    # train RAMBO start (no need to relabel reward)
+    # train RAMBO start (no need to relabel in this case)
     if args.load_bc_path:
         policy.load(args.load_bc_path)
         policy.to(args.device)
     else:
         policy.pretrain(real_buffer.sample_all(), args.bc_epoch, args.bc_batch_size, args.bc_lr, logger)
+    
     if args.load_dynamics_path:
-        dynamics.load(args.load_dynamics_path)
+        dynamics_and_reward.load(args.load_dynamics_path)
     else:
-        dynamics.train(
+        dynamics_and_reward.train(
             real_buffer.sample_all(),
-            None,
             logger,
             holdout_ratio=0.1,
             logvar_loss_coef=0.001,

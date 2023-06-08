@@ -2,11 +2,14 @@ import os
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from typing import Callable, List, Tuple, Dict, Optional
 from offlinerlkit.dynamics import BaseDynamics
+from offlinerlkit.modules import EnsembleDynamicsModel, EnsembleDynamicsModelWithSeparateReward
 from offlinerlkit.utils.scaler import StandardScaler
 from offlinerlkit.utils.logger import Logger
+from offlinerlkit.buffer import PreferenceDataset
 
 
 class EnsembleDynamics(BaseDynamics):
@@ -20,6 +23,8 @@ class EnsembleDynamics(BaseDynamics):
         uncertainty_mode: str = "aleatoric"
     ) -> None:
         super().__init__(model, optim)
+        assert isinstance(self.model, EnsembleDynamicsModel) or isinstance(self.model, EnsembleDynamicsModelWithSeparateReward)
+        
         self.scaler = scaler
         self.terminal_fn = terminal_fn
         self._penalty_coef = penalty_coef
@@ -34,30 +39,46 @@ class EnsembleDynamics(BaseDynamics):
         "imagine single forward step"
         obs_act = np.concatenate([obs, action], axis=-1)
         obs_act = self.scaler.transform(obs_act)
-        mean, logvar = self.model(obs_act)
-        mean = mean.cpu().numpy()
-        logvar = logvar.cpu().numpy()
-        mean[..., :-1] += obs
-        std = np.sqrt(np.exp(logvar))
+        
+        if isinstance(self.model, EnsembleDynamicsModel):
+            mean, logvar = self.model(obs_act)
+            mean = mean.cpu().numpy()
+            logvar = logvar.cpu().numpy()
+            mean[..., :-1] += obs # next state
+            std = np.sqrt(np.exp(logvar)) # [n_ensemble, batch_size, (s' + r) dim]
+        else:
+            assert isinstance(self.model, EnsembleDynamicsModelWithSeparateReward), "model should have separate reward head!"
+            mean, logvar, reward = self.model(obs_act)
+            mean = mean.cpu().numpy()
+            logvar = logvar.cpu().numpy()
+            mean += obs
+            std = np.sqrt(np.exp(logvar)) # [n_ensemble, batch_size, s' dim]
 
+        # sample from dist
         ensemble_samples = (mean + np.random.normal(size=mean.shape) * std).astype(np.float32)
 
         # choose one model from ensemble
         num_models, batch_size, _ = ensemble_samples.shape
         model_idxs = self.model.random_elite_idxs(batch_size)
         samples = ensemble_samples[model_idxs, np.arange(batch_size)]
+        if isinstance(self.model, EnsembleDynamicsModelWithSeparateReward):
+            reward = reward[model_idxs, np.arange(batch_size)]
         
-        next_obs = samples[..., :-1]
-        reward = samples[..., -1:]
+        if isinstance(self.model, EnsembleDynamicsModel):
+            next_obs = samples[..., :-1]
+            reward = samples[..., -1:]
+        else:
+            next_obs = samples
+        
         terminal = self.terminal_fn(obs, action, next_obs)
         info = {}
         info["raw_reward"] = reward
 
         if self._penalty_coef:
             if self._uncertainty_mode == "aleatoric":
-                penalty = np.amax(np.linalg.norm(std, axis=2), axis=0)
+                penalty = np.amax(np.linalg.norm(std, axis=2), axis=0) # (batch_size)
             elif self._uncertainty_mode == "pairwise-diff":
-                next_obses_mean = mean[..., :-1]
+                next_obses_mean = mean[..., :-1] if isinstance(self.model, EnsembleDynamicsModel) else mean
                 next_obs_mean = np.mean(next_obses_mean, axis=0)
                 diff = next_obses_mean - next_obs_mean
                 penalty = np.amax(np.linalg.norm(diff, axis=2), axis=0)
@@ -66,6 +87,7 @@ class EnsembleDynamics(BaseDynamics):
                 penalty = np.sqrt(next_obses_mean.var(0).mean(1))
             else:
                 raise ValueError
+            
             penalty = np.expand_dims(penalty, 1).astype(np.float32)
             assert penalty.shape == reward.shape
             reward = reward - self._penalty_coef * penalty
@@ -82,15 +104,20 @@ class EnsembleDynamics(BaseDynamics):
     ) -> torch.Tensor:
         obs_act = torch.cat([obs, action], dim=-1)
         obs_act = self.scaler.transform_tensor(obs_act)
-        mean, logvar = self.model(obs_act)
-        mean[..., :-1] += obs
-        std = torch.sqrt(torch.exp(logvar))
+        if isinstance(self.model, EnsembleDynamicsModel):
+            mean, logvar = self.model(obs_act)
+            mean[..., :-1] += obs
+            std = torch.sqrt(torch.exp(logvar))
+        else:
+            mean, logvar, _ = self.model(obs_act)
+            mean += obs
+            std = torch.sqrt(torch.exp(logvar))
 
         mean = mean[self.model.elites.data.cpu().numpy()]
         std = std[self.model.elites.data.cpu().numpy()]
 
         samples = torch.stack([mean + torch.randn_like(std) * std for i in range(num_samples)], 0)
-        next_obss = samples[..., :-1]
+        next_obss = samples[..., :-1] if isinstance(self.model, EnsembleDynamicsModel) else samples
         return next_obss
 
     def format_samples_for_training(self, data: Dict) -> Tuple[np.ndarray, np.ndarray]:
@@ -106,6 +133,7 @@ class EnsembleDynamics(BaseDynamics):
     def train(
         self,
         data: Dict,
+        preference_dataset: Optional[PreferenceDataset],
         logger: Logger,
         max_epochs: Optional[float] = None,
         max_epochs_since_update: int = 5,
@@ -113,6 +141,7 @@ class EnsembleDynamics(BaseDynamics):
         holdout_ratio: float = 0.2,
         logvar_loss_coef: float = 0.01
     ) -> None:
+        # trains on full offline data only right now, add preference data training.
         inputs, targets = self.format_samples_for_training(data)
         data_size = inputs.shape[0]
         holdout_size = min(int(data_size * holdout_ratio), 1000)
@@ -124,7 +153,7 @@ class EnsembleDynamics(BaseDynamics):
         self.scaler.fit(train_inputs)
         train_inputs = self.scaler.transform(train_inputs)
         holdout_inputs = self.scaler.transform(holdout_inputs)
-        holdout_losses = [1e10 for i in range(self.model.num_ensemble)]
+        holdout_losses = [1e10 for _ in range(self.model.num_ensemble)]
 
         data_idxes = np.random.randint(train_size, size=[self.model.num_ensemble, train_size])
         def shuffle_rows(arr):
@@ -136,7 +165,13 @@ class EnsembleDynamics(BaseDynamics):
         logger.log("Training dynamics:")
         while True:
             epoch += 1
-            train_loss = self.learn(train_inputs[data_idxes], train_targets[data_idxes], batch_size, logvar_loss_coef)
+            
+            if preference_dataset is not None:
+                pref_batch = preference_dataset.sample(batch_size)
+            else:
+                pref_batch = None
+            
+            train_loss = self.learn(train_inputs[data_idxes], train_targets[data_idxes], pref_batch, batch_size, logvar_loss_coef)
             new_holdout_losses = self.validate(holdout_inputs, holdout_targets)
             holdout_loss = (np.sort(new_holdout_losses)[:self.model.num_elites]).mean()
             logger.logkv("loss/dynamics_train_loss", train_loss)
@@ -174,6 +209,7 @@ class EnsembleDynamics(BaseDynamics):
         self,
         inputs: np.ndarray,
         targets: np.ndarray,
+        pref_batch: Optional[Dict[str, torch.Tensor]],
         batch_size: int = 256,
         logvar_loss_coef: float = 0.01
     ) -> float:
@@ -186,14 +222,37 @@ class EnsembleDynamics(BaseDynamics):
             targets_batch = targets[:, batch_num * batch_size:(batch_num + 1) * batch_size]
             targets_batch = torch.as_tensor(targets_batch).to(self.model.device)
             
-            mean, logvar = self.model(inputs_batch)
-            inv_var = torch.exp(-logvar)
+            # get outputs
+            if isinstance(self.model, EnsembleDynamicsModel):
+                mean, logvar = self.model(inputs_batch)
+                inv_var = torch.exp(-logvar)
+            else:
+                mean, logvar, _ = self.model(inputs_batch)
+                inv_var = torch.exp(-logvar)
+            
             # Average over batch and dim, sum over ensembles.
             mse_loss_inv = (torch.pow(mean - targets_batch, 2) * inv_var).mean(dim=(1, 2))
             var_loss = logvar.mean(dim=(1, 2))
             loss = mse_loss_inv.sum() + var_loss.sum()
             loss = loss + self.model.get_decay_loss()
             loss = loss + logvar_loss_coef * self.model.max_logvar.sum() - logvar_loss_coef * self.model.min_logvar.sum()
+            
+            # get reward loss over preference batch
+            if pref_batch is not None:
+                obs_actions1 = torch.cat([pref_batch["observations1"], pref_batch["actions1"]], dim=-1)
+                obs_actions2 = torch.cat([pref_batch["observations2"], pref_batch["actions2"]], dim=-1)
+                ensemble_pred_rew1 = self.model(obs_actions1)[..., -1].sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
+                ensemble_pred_rew2 = self.model(obs_actions2)[..., -1].sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
+                
+                # predicted reward
+                ensemble_pred_rewsum = ensemble_pred_rew1 + ensemble_pred_rew2
+                label_preds = ensemble_pred_rew1 / ensemble_pred_rewsum # for normalization it is not necessary cuz everything is > 0
+                
+                # ground truth label from preference dataset
+                label_gt = pref_batch["label"].tile(self.model.num_ensemble, 1) # (num_ensemble,)
+                reward_loss = F.binary_cross_entropy(label_preds, label_gt)
+                
+                loss = loss + reward_loss
 
             self.optim.zero_grad()
             loss.backward()
@@ -208,6 +267,7 @@ class EnsembleDynamics(BaseDynamics):
         targets = torch.as_tensor(targets).to(self.model.device)
         mean, _ = self.model(inputs)
         loss = ((mean - targets) ** 2).mean(dim=(1, 2))
+        print(f"validation loss shape: {loss.shape}")
         val_loss = list(loss.cpu().numpy())
         return val_loss
     
