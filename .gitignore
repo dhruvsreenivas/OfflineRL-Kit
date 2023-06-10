@@ -8,4 +8,4 @@
 **/*.txt
 **/.vscode
 **/_log
-offline_data
+offline_data*

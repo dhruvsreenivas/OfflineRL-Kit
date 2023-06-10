@@ -69,6 +69,8 @@ def get_args():
     parser.add_argument("--real-ratio", type=float, default=0.5)
     parser.add_argument("--load-dynamics-path", type=str, default=None)
     parser.add_argument("--train-w-reward-learning", action="store_true")
+    parser.add_argument("--max-grad-norm", type=float, default=None)
+    parser.add_argument("--normalize-reward-preds", action="store_true")
 
     parser.add_argument("--epoch", type=int, default=2000)
     parser.add_argument("--step-per-epoch", type=int, default=1000)
@@ -185,6 +187,7 @@ def train(args=get_args()):
         dynamics_optim,
         dynamics_scaler,
         termination_fn,
+        max_grad_norm=args.max_grad_norm
     )
     
     # create policy
@@ -276,7 +279,8 @@ def train(args=get_args()):
             logger,
             holdout_ratio=0.1,
             logvar_loss_coef=0.001,
-            max_epochs_since_update=10
+            max_epochs_since_update=10,
+            normalize_reward=args.normalize_reward_preds
         )
 
     # train policy (either with reward model adversarially (our approach) or treating as GT (no reward))

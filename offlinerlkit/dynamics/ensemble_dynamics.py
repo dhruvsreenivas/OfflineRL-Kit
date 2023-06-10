@@ -20,6 +20,7 @@ class EnsembleDynamics(BaseDynamics):
         scaler: StandardScaler,
         terminal_fn: Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray],
         penalty_coef: float = 0.0,
+        max_grad_norm: Optional[float] = None,
         uncertainty_mode: str = "aleatoric"
     ) -> None:
         super().__init__(model, optim)
@@ -29,6 +30,7 @@ class EnsembleDynamics(BaseDynamics):
         self.terminal_fn = terminal_fn
         self._penalty_coef = penalty_coef
         self._uncertainty_mode = uncertainty_mode
+        self._max_grad_norm = max_grad_norm
 
     @torch.no_grad()
     def step(
@@ -139,7 +141,8 @@ class EnsembleDynamics(BaseDynamics):
         max_epochs_since_update: int = 5,
         batch_size: int = 256,
         holdout_ratio: float = 0.2,
-        logvar_loss_coef: float = 0.01
+        logvar_loss_coef: float = 0.01,
+        normalize_reward: bool = False
     ) -> None:
         # trains on full offline data only right now, add preference data training.
         inputs, targets = self.format_samples_for_training(data)
@@ -171,7 +174,7 @@ class EnsembleDynamics(BaseDynamics):
             else:
                 pref_batch = None
             
-            train_loss = self.learn(train_inputs[data_idxes], train_targets[data_idxes], pref_batch, batch_size, logvar_loss_coef)
+            train_loss = self.learn(train_inputs[data_idxes], train_targets[data_idxes], pref_batch, batch_size, logvar_loss_coef, normalize_reward)
             new_holdout_losses = self.validate(holdout_inputs, holdout_targets)
             holdout_loss = (np.sort(new_holdout_losses)[:self.model.num_elites]).mean()
             logger.logkv("loss/dynamics_train_loss", train_loss)
@@ -211,7 +214,8 @@ class EnsembleDynamics(BaseDynamics):
         targets: np.ndarray,
         pref_batch: Optional[Dict[str, torch.Tensor]],
         batch_size: int = 256,
-        logvar_loss_coef: float = 0.01
+        logvar_loss_coef: float = 0.01,
+        normalize_reward: bool = False
     ) -> float:
         self.model.train()
         train_size = inputs.shape[1]
@@ -239,12 +243,24 @@ class EnsembleDynamics(BaseDynamics):
             loss = loss + logvar_loss_coef * self.model.max_logvar.sum() - logvar_loss_coef * self.model.min_logvar.sum()
             
             # get reward loss over preference batch
+            init_labels = None
             if pref_batch is not None:
-                obs_actions1 = torch.cat([pref_batch["observations1"], pref_batch["actions1"]], dim=-1)
-                obs_actions2 = torch.cat([pref_batch["observations2"], pref_batch["actions2"]], dim=-1)
+                obs_actions1 = torch.cat([pref_batch["observations1"], pref_batch["actions1"]], dim=-1).float()
+                obs_actions2 = torch.cat([pref_batch["observations2"], pref_batch["actions2"]], dim=-1).float()
                 
-                _, _, ensemble_pred_rew1 = self.model(obs_actions1)
+                _, _, ensemble_pred_rew1 = self.model(obs_actions1) # (n_ensemble, batch_size, seg_len, 1)
                 _, _, ensemble_pred_rew2 = self.model(obs_actions2)
+                assert not torch.isnan(ensemble_pred_rew1).any()
+                assert not torch.isnan(ensemble_pred_rew2).any()
+                
+                # normalize rewards before getting label
+                if normalize_reward:
+                    ensemble_pred_rew1 = (ensemble_pred_rew1 - ensemble_pred_rew1.mean((1, 2), keepdim=True)) / (ensemble_pred_rew1.std((1, 2), keepdim=True) + 1e-8)
+                    ensemble_pred_rew2 = (ensemble_pred_rew2 - ensemble_pred_rew2.mean((1, 2), keepdim=True)) / (ensemble_pred_rew2.std((1, 2), keepdim=True) + 1e-8)
+                
+                assert not torch.isnan(ensemble_pred_rew1).any()
+                assert not torch.isnan(ensemble_pred_rew2).any()
+                
                 ensemble_pred_rew1 = ensemble_pred_rew1.sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
                 ensemble_pred_rew2 = ensemble_pred_rew2.sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
                 assert (ensemble_pred_rew1 >= 0).all()
@@ -258,17 +274,21 @@ class EnsembleDynamics(BaseDynamics):
                 # ground truth label from preference dataset
                 label_gt = pref_batch["label"].tile(self.model.num_ensemble, 1) # (num_ensemble,)
                 
-                print(f'label preds: {label_preds}')
-                print(f'label preds size: {label_preds.size()}')
-                print(f'ground truth: {label_gt}')
-                print(f'ground truth size: {label_gt.size()}')
+                # for debugging, check if labels are different across batch
+                if init_labels is None:
+                    init_labels = label_gt.detach()
+                else:
+                    assert not torch.all(init_labels == label_gt.detach()), "same labels across batch should not be happening"
+                    init_labels = label_gt.detach()
                 
                 reward_loss = F.binary_cross_entropy(label_preds, label_gt)
-                
                 loss = loss + reward_loss
 
             self.optim.zero_grad()
             loss.backward()
+            if self._max_grad_norm is not None:
+                nn.utils.clip_grad_norm(self.model.parameters(), self._max_grad_norm)
+            
             self.optim.step()
 
             losses.append(loss.item())
