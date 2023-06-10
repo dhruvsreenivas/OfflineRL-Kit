@@ -11,7 +11,6 @@ from operator import itemgetter
 from offlinerlkit.utils.scaler import StandardScaler
 from offlinerlkit.policy import MOPOPolicy
 from offlinerlkit.dynamics import BaseDynamics
-from offlinerlkit.rewards import BaseReward
 
 
 class RAMBORewardLearningSharedPolicy(MOPOPolicy):
@@ -67,7 +66,7 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         self.device = device
         
     def load(self, path):
-        self.load_state_dict(torch.load(os.path.join(path, "rambo_reward_learn_pretrain.pth"), map_location=self.device))
+        self.load_state_dict(torch.load(os.path.join(path, "rambo_reward_learn_shared_pretrain.pth"), map_location=self.device))
 
     def pretrain(self, data: Dict, n_epoch, batch_size, lr, logger) -> None:
         self._bc_optim = torch.optim.Adam(self.actor.parameters(), lr=lr)
@@ -76,7 +75,7 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         sample_num = observations.shape[0]
         idxs = np.arange(sample_num)
 
-        logger.log("Pretraining policy")
+        logger.log("=== Pretraining policy ===")
         self.actor.train()
         for i_epoch in range(n_epoch):
             np.random.shuffle(idxs)
@@ -94,8 +93,8 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
                 bc_loss.backward()
                 self._bc_optim.step()
                 sum_loss += bc_loss.cpu().item()
-            print(f"Epoch {i_epoch}, mean bc loss {sum_loss/i_batch}")
-        torch.save(self.state_dict(), os.path.join(logger.model_dir, "rambo_pretrain.pth"))
+            print(f"Epoch {i_epoch}: mean bc loss {sum_loss/i_batch}")
+        torch.save(self.state_dict(), os.path.join(logger.model_dir, "rambo_reward_learn_shared_pretrain.pth"))
 
     def update_dynamics_and_reward(
         self,
@@ -233,12 +232,11 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
     def reward_loss(self, preference_batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         obs_actions1 = torch.cat([preference_batch["observations1"], preference_batch["actions1"]], dim=-1)
         obs_actions2 = torch.cat([preference_batch["observations2"], preference_batch["actions2"]], dim=-1)
-        ensemble_pred_rew1 = self.dynamics.model(obs_actions1)[..., -1].sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
-        ensemble_pred_rew2 = self.dynamics.model(obs_actions2)[..., -1].sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
         
-        # debug mode size
-        print(f'rew1 size: {ensemble_pred_rew1.size()}')
-        print(f'rew2 size: {ensemble_pred_rew2.size()}')
+        _, _, ensemble_pred_rew1 = self.dynamics.model(obs_actions1)
+        _, _, ensemble_pred_rew2 = self.dynamics.model(obs_actions2)
+        ensemble_pred_rew1 = ensemble_pred_rew1.sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
+        ensemble_pred_rew2 = ensemble_pred_rew2.sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
         
         # predicted reward
         ensemble_pred_rewsum = ensemble_pred_rew1 + ensemble_pred_rew2

@@ -107,18 +107,21 @@ class EnsembleDynamicsModel(nn.Module):
 
     def load_save(self) -> None:
         for layer in self.backbones:
-            layer.load_save()
+            if not isinstance(layer, nn.Dropout):
+                layer.load_save()
         self.output_layer.load_save()
 
     def update_save(self, indexes: List[int]) -> None:
         for layer in self.backbones:
-            layer.update_save(indexes)
+            if not isinstance(layer, nn.Dropout):
+                layer.update_save(indexes)
         self.output_layer.update_save(indexes)
     
     def get_decay_loss(self) -> torch.Tensor:
         decay_loss = 0
         for layer in self.backbones:
-            decay_loss += layer.get_decay_loss()
+            if not isinstance(layer, nn.Dropout):
+                decay_loss += layer.get_decay_loss()
         decay_loss += self.output_layer.get_decay_loss()
         return decay_loss
 
@@ -219,20 +222,23 @@ class EnsembleDynamicsModelWithSeparateReward(nn.Module):
 
     def load_save(self) -> None:
         for layer in self.backbones:
-            layer.load_save()
+            if not isinstance(layer, nn.Dropout):
+                layer.load_save()
         self.next_state_layer.load_save()
         self.reward_layer.load_save()
 
     def update_save(self, indexes: List[int]) -> None:
         for layer in self.backbones:
-            layer.update_save(indexes)
+            if not isinstance(layer, nn.Dropout):
+                layer.update_save(indexes)
         self.next_state_layer.update_save(indexes)
         self.reward_layer.update_save(indexes)
     
     def get_decay_loss(self) -> torch.Tensor:
         decay_loss = 0
         for layer in self.backbones:
-            decay_loss += layer.get_decay_loss()
+            if not isinstance(layer, nn.Dropout):
+                decay_loss += layer.get_decay_loss()
         decay_loss += self.next_state_layer.get_decay_loss()
         decay_loss += self.reward_layer.get_decay_loss()
         return decay_loss

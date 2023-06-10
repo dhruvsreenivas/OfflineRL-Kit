@@ -228,6 +228,7 @@ class EnsembleDynamics(BaseDynamics):
                 inv_var = torch.exp(-logvar)
             else:
                 mean, logvar, _ = self.model(inputs_batch)
+                targets_batch = targets_batch[..., :-1] # only next state
                 inv_var = torch.exp(-logvar)
             
             # Average over batch and dim, sum over ensembles.
@@ -241,15 +242,27 @@ class EnsembleDynamics(BaseDynamics):
             if pref_batch is not None:
                 obs_actions1 = torch.cat([pref_batch["observations1"], pref_batch["actions1"]], dim=-1)
                 obs_actions2 = torch.cat([pref_batch["observations2"], pref_batch["actions2"]], dim=-1)
-                ensemble_pred_rew1 = self.model(obs_actions1)[..., -1].sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
-                ensemble_pred_rew2 = self.model(obs_actions2)[..., -1].sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
                 
-                # predicted reward
+                _, _, ensemble_pred_rew1 = self.model(obs_actions1)
+                _, _, ensemble_pred_rew2 = self.model(obs_actions2)
+                ensemble_pred_rew1 = ensemble_pred_rew1.sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
+                ensemble_pred_rew2 = ensemble_pred_rew2.sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
+                assert (ensemble_pred_rew1 >= 0).all()
+                assert (ensemble_pred_rew2 >= 0).all()
+                
+                # predicted probability of preference reward
                 ensemble_pred_rewsum = ensemble_pred_rew1 + ensemble_pred_rew2
+                assert (ensemble_pred_rewsum >= ensemble_pred_rew1).all()
                 label_preds = ensemble_pred_rew1 / ensemble_pred_rewsum # for normalization it is not necessary cuz everything is > 0
                 
                 # ground truth label from preference dataset
                 label_gt = pref_batch["label"].tile(self.model.num_ensemble, 1) # (num_ensemble,)
+                
+                print(f'label preds: {label_preds}')
+                print(f'label preds size: {label_preds.size()}')
+                print(f'ground truth: {label_gt}')
+                print(f'ground truth size: {label_gt.size()}')
+                
                 reward_loss = F.binary_cross_entropy(label_preds, label_gt)
                 
                 loss = loss + reward_loss

@@ -99,7 +99,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
                 self._bc_optim.step()
                 sum_loss += bc_loss.cpu().item()
             print(f"Epoch {i_epoch}, mean bc loss {sum_loss/i_batch}")
-        torch.save(self.state_dict(), os.path.join(logger.model_dir, "rambo_pretrain.pth"))
+        torch.save(self.state_dict(), os.path.join(logger.model_dir, "rambo_reward_learn_pretrain.pth"))
 
     def update_dynamics_and_reward(
         self,

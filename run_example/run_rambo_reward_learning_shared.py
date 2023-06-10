@@ -14,12 +14,11 @@ import torch
 from offlinerlkit.nets import MLP
 from offlinerlkit.modules import ActorProb, Critic, TanhDiagGaussian, EnsembleDynamicsModelWithSeparateReward
 from offlinerlkit.dynamics import EnsembleDynamics
-from offlinerlkit.rewards import EnsembleReward
 from offlinerlkit.utils.scaler import StandardScaler
 from offlinerlkit.utils.termination_fns import get_termination_fn, obs_unnormalization
 from offlinerlkit.buffer import ReplayBuffer
 from offlinerlkit.utils.logger import Logger, make_log_dirs
-from offlinerlkit.policy_trainer import MBPolicyTrainer, PrefMBPolicyTrainer
+from offlinerlkit.policy_trainer import PrefMBPolicyTrainer
 from offlinerlkit.policy import RAMBOPolicy, RAMBORewardLearningSharedPolicy
 
 
@@ -41,7 +40,7 @@ walker2d-medium-expert-v2: rollout-length=2, adv-weight=3e-4
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--netid", type=str, default="ds844")
-    parser.add_argument("--algo-name", type=str, default="rambo_reward_learning")
+    parser.add_argument("--algo-name", type=str, default="rambo_reward_learning_shared")
     parser.add_argument("--task", type=str, default="hopper-medium-expert-v2")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--actor-lr", type=float, default=1e-4)
@@ -84,17 +83,7 @@ def get_args():
     parser.add_argument("--bc-batch-size", type=int, default=256)
     
     # reward learning args
-    parser.add_argument("--reward-hidden-dims", type=int, nargs='*', default=[200, 200, 200, 200])
-    parser.add_argument("--reward-weight-decay", type=float, nargs='*', default=[0.0, 0.0, 0.0, 0.0, 0.0])
-    parser.add_argument("--reward-lr", type=float, default=3e-4)
-    parser.add_argument("--n-reward_models", type=int, default=7)
-    parser.add_argument("--n-reward-elites", type=int, default=5)
-    parser.add_argument("--reward-with-action", action="store_true")
     parser.add_argument("--segment-length", type=int, default=15)
-    parser.add_argument("--use-reward-scaler", action="store_true")
-    parser.add_argument("--reward-penalty-coef", type=float, default=1.0)
-    parser.add_argument("--reward_batch_size", type=int, default=100)
-    parser.add_argument("--reward-uncertainty-mode", type=str, default="aleatoric")
     parser.add_argument("--dropout-prob", type=float, default=0.2)
 
     return parser.parse_args()
@@ -255,9 +244,10 @@ def train(args=get_args()):
     logger.log_hyperparameters(vars(args))
 
     # create policy trainer
-    policy_trainer = MBPolicyTrainer(
+    policy_trainer = PrefMBPolicyTrainer(
         policy=policy,
         eval_env=env,
+        preference_dataset=pref_dataset,
         real_buffer=real_buffer,
         fake_buffer=fake_buffer,
         logger=logger,
@@ -282,6 +272,7 @@ def train(args=get_args()):
     else:
         dynamics_and_reward.train(
             real_buffer.sample_all(),
+            pref_dataset,
             logger,
             holdout_ratio=0.1,
             logvar_loss_coef=0.001,

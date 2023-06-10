@@ -19,7 +19,7 @@ from offlinerlkit.utils.scaler import StandardScaler
 from offlinerlkit.utils.termination_fns import get_termination_fn, obs_unnormalization
 from offlinerlkit.buffer import ReplayBuffer
 from offlinerlkit.utils.logger import Logger, make_log_dirs
-from offlinerlkit.policy_trainer import MBPolicyTrainer
+from offlinerlkit.policy_trainer import PrefMBPolicyTrainer
 from offlinerlkit.policy import RAMBOPolicy, RAMBORewardLearningPolicy
 
 
@@ -282,10 +282,11 @@ def train(args=get_args()):
     logger = Logger(log_dirs, output_config)
     logger.log_hyperparameters(vars(args))
 
-    # create policy trainer
-    policy_trainer = MBPolicyTrainer(
+    # create policy trainer (here we don't train reward later, we just relabel and assume it works?)
+    policy_trainer = PrefMBPolicyTrainer(
         policy=policy,
         eval_env=env,
+        preference_dataset=pref_dataset,
         real_buffer=real_buffer,
         fake_buffer=fake_buffer,
         logger=logger,
