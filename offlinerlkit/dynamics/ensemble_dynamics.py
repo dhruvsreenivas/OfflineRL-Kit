@@ -9,7 +9,7 @@ from offlinerlkit.dynamics import BaseDynamics
 from offlinerlkit.modules import EnsembleDynamicsModel, EnsembleDynamicsModelWithSeparateReward
 from offlinerlkit.utils.scaler import StandardScaler
 from offlinerlkit.utils.logger import Logger
-from offlinerlkit.buffer import PreferenceDataset
+from offlinerlkit.buffer import PreferenceDataset, filter
 
 
 class EnsembleDynamics(BaseDynamics):
@@ -144,7 +144,7 @@ class EnsembleDynamics(BaseDynamics):
         logvar_loss_coef: float = 0.01,
         normalize_reward: bool = False
     ) -> None:
-        # trains on full offline data only right now, add preference data training.
+        
         inputs, targets = self.format_samples_for_training(data)
         data_size = inputs.shape[0]
         holdout_size = min(int(data_size * holdout_ratio), 1000)
@@ -152,6 +152,17 @@ class EnsembleDynamics(BaseDynamics):
         train_splits, holdout_splits = torch.utils.data.random_split(range(data_size), (train_size, holdout_size))
         train_inputs, train_targets = inputs[train_splits.indices], targets[train_splits.indices]
         holdout_inputs, holdout_targets = inputs[holdout_splits.indices], targets[holdout_splits.indices]
+        
+        # set up training and validation for preference data as well
+        if preference_dataset is not None:
+            pref_train_size = min(int(len(preference_dataset) * holdout_ratio), 1000)
+            pref_holdout_size = len(preference_dataset) - pref_train_size
+            pref_train_splits, pref_val_splits = torch.utils.data.random_split(range(len(preference_dataset)), (pref_train_size, pref_holdout_size))
+            pref_train_dataset = filter(preference_dataset, pref_train_splits.indices)
+            pref_val_dataset = filter(preference_dataset, pref_val_splits.indices)
+        else:
+            pref_train_dataset = None
+            pref_val_dataset = None
 
         self.scaler.fit(train_inputs)
         train_inputs = self.scaler.transform(train_inputs)
@@ -165,17 +176,17 @@ class EnsembleDynamics(BaseDynamics):
 
         epoch = 0
         cnt = 0
-        logger.log("Training dynamics:")
+        logger.log("=== Training dynamics: ===")
         while True:
             epoch += 1
             
-            if preference_dataset is not None:
-                pref_batch = preference_dataset.sample(batch_size)
+            if pref_train_dataset is not None:
+                pref_batch = pref_train_dataset.sample(batch_size)
             else:
                 pref_batch = None
             
             train_loss = self.learn(train_inputs[data_idxes], train_targets[data_idxes], pref_batch, batch_size, logvar_loss_coef, normalize_reward)
-            new_holdout_losses = self.validate(holdout_inputs, holdout_targets)
+            new_holdout_losses = self.validate(holdout_inputs, holdout_targets, pref_val_dataset, normalize_reward)
             holdout_loss = (np.sort(new_holdout_losses)[:self.model.num_elites]).mean()
             logger.logkv("loss/dynamics_train_loss", train_loss)
             logger.logkv("loss/dynamics_holdout_loss", holdout_loss)
@@ -207,6 +218,45 @@ class EnsembleDynamics(BaseDynamics):
         self.save(logger.model_dir)
         self.model.eval()
         logger.log("elites:{} , holdout loss: {}".format(indexes, (np.sort(holdout_losses)[:self.model.num_elites]).mean()))
+        
+    # reward loss
+    def reward_loss(
+        self,
+        pref_batch: Dict[str, torch.Tensor],
+        normalize_reward: bool = True
+    ) -> torch.Tensor:
+        obs_actions1 = torch.cat([pref_batch["observations1"], pref_batch["actions1"]], dim=-1).float()
+        obs_actions2 = torch.cat([pref_batch["observations2"], pref_batch["actions2"]], dim=-1).float()
+        
+        _, _, ensemble_pred_rew1 = self.model(obs_actions1) # (n_ensemble, batch_size, seg_len, 1)
+        _, _, ensemble_pred_rew2 = self.model(obs_actions2)
+        
+        # normalize rewards before getting label (check again if any nans)
+        if normalize_reward:
+            ensemble_pred_rew1 = (ensemble_pred_rew1 - ensemble_pred_rew1.mean((1, 2), keepdim=True)) / (ensemble_pred_rew1.std((1, 2), keepdim=True) + 1e-8)
+            ensemble_pred_rew2 = (ensemble_pred_rew2 - ensemble_pred_rew2.mean((1, 2), keepdim=True)) / (ensemble_pred_rew2.std((1, 2), keepdim=True) + 1e-8)
+        
+        # convert to float64 to avoid infs
+        ensemble_pred_rew1 = ensemble_pred_rew1.to(dtype=torch.float64)
+        ensemble_pred_rew2 = ensemble_pred_rew2.to(dtype=torch.float64)
+        
+        ensemble_pred_rew1 = ensemble_pred_rew1.sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
+        ensemble_pred_rew2 = ensemble_pred_rew2.sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
+        assert (ensemble_pred_rew1 >= 0).all()
+        assert (ensemble_pred_rew2 >= 0).all()
+        assert not torch.isinf(ensemble_pred_rew1).any()
+        assert not torch.isinf(ensemble_pred_rew2).any()
+        
+        # predicted probability of preference reward
+        ensemble_pred_rewsum = ensemble_pred_rew1 + ensemble_pred_rew2
+        assert (ensemble_pred_rewsum >= ensemble_pred_rew1).all()
+        label_preds = ensemble_pred_rew1 / ensemble_pred_rewsum # for normalization it is not necessary cuz everything is > 0
+        
+        # ground truth label from preference dataset
+        label_gt = pref_batch["label"].tile(self.model.num_ensemble, 1).to(dtype=torch.float64) # (num_ensemble, batch_size)
+        
+        reward_loss = F.binary_cross_entropy(label_preds, label_gt)
+        return reward_loss
     
     def learn(
         self,
@@ -243,47 +293,10 @@ class EnsembleDynamics(BaseDynamics):
             loss = loss + logvar_loss_coef * self.model.max_logvar.sum() - logvar_loss_coef * self.model.min_logvar.sum()
             
             # get reward loss over preference batch
-            init_labels = None
             if pref_batch is not None:
-                obs_actions1 = torch.cat([pref_batch["observations1"], pref_batch["actions1"]], dim=-1).float()
-                obs_actions2 = torch.cat([pref_batch["observations2"], pref_batch["actions2"]], dim=-1).float()
-                
-                _, _, ensemble_pred_rew1 = self.model(obs_actions1) # (n_ensemble, batch_size, seg_len, 1)
-                _, _, ensemble_pred_rew2 = self.model(obs_actions2)
-                assert not torch.isnan(ensemble_pred_rew1).any()
-                assert not torch.isnan(ensemble_pred_rew2).any()
-                
-                # normalize rewards before getting label
-                if normalize_reward:
-                    ensemble_pred_rew1 = (ensemble_pred_rew1 - ensemble_pred_rew1.mean((1, 2), keepdim=True)) / (ensemble_pred_rew1.std((1, 2), keepdim=True) + 1e-8)
-                    ensemble_pred_rew2 = (ensemble_pred_rew2 - ensemble_pred_rew2.mean((1, 2), keepdim=True)) / (ensemble_pred_rew2.std((1, 2), keepdim=True) + 1e-8)
-                
-                assert not torch.isnan(ensemble_pred_rew1).any()
-                assert not torch.isnan(ensemble_pred_rew2).any()
-                
-                ensemble_pred_rew1 = ensemble_pred_rew1.sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
-                ensemble_pred_rew2 = ensemble_pred_rew2.sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
-                assert (ensemble_pred_rew1 >= 0).all()
-                assert (ensemble_pred_rew2 >= 0).all()
-                
-                # predicted probability of preference reward
-                ensemble_pred_rewsum = ensemble_pred_rew1 + ensemble_pred_rew2
-                assert (ensemble_pred_rewsum >= ensemble_pred_rew1).all()
-                label_preds = ensemble_pred_rew1 / ensemble_pred_rewsum # for normalization it is not necessary cuz everything is > 0
-                
-                # ground truth label from preference dataset
-                label_gt = pref_batch["label"].tile(self.model.num_ensemble, 1) # (num_ensemble,)
-                
-                # for debugging, check if labels are different across batch
-                if init_labels is None:
-                    init_labels = label_gt.detach()
-                else:
-                    assert not torch.all(init_labels == label_gt.detach()), "same labels across batch should not be happening"
-                    init_labels = label_gt.detach()
-                
-                reward_loss = F.binary_cross_entropy(label_preds, label_gt)
+                reward_loss = self.reward_loss(pref_batch, normalize_reward)
                 loss = loss + reward_loss
-
+            
             self.optim.zero_grad()
             loss.backward()
             if self._max_grad_norm is not None:
@@ -295,12 +308,34 @@ class EnsembleDynamics(BaseDynamics):
         return np.mean(losses)
     
     @torch.no_grad()
-    def validate(self, inputs: np.ndarray, targets: np.ndarray) -> List[float]:
+    def validate(
+        self,
+        inputs: np.ndarray,
+        targets: np.ndarray,
+        preference_dataset: Optional[PreferenceDataset] = None,
+        normalize_reward: bool = False
+    ) -> List[float]:
         self.model.eval()
         targets = torch.as_tensor(targets).to(self.model.device)
-        mean, _ = self.model(inputs)
-        loss = ((mean - targets) ** 2).mean(dim=(1, 2))
-        print(f"validation loss shape: {loss.shape}")
+        
+        if isinstance(self.model, EnsembleDynamicsModel):
+            mean, _ = self.model(inputs)
+            loss = ((mean - targets) ** 2).mean(dim=(1, 2))
+        else:
+            mean, _, _ = self.model(inputs)
+            mse_loss = ((mean - targets) ** 2).mean(dim=(1, 2))
+            
+            # TODO implement reward loss on some number of preference batches
+            if preference_dataset is not None:
+                reward_loss = 0.0
+                for _ in range(len(preference_dataset) // inputs.shape[0]):
+                    batch = preference_dataset.sample(inputs.shape[0])
+                    reward_loss += self.reward_loss(batch, normalize_reward=normalize_reward)
+                
+                reward_loss /= inputs.shape[0]
+                loss = mse_loss + reward_loss
+        
+        print(f"validation loss shape: {loss.size()}")
         val_loss = list(loss.cpu().numpy())
         return val_loss
     

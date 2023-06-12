@@ -93,13 +93,14 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
                 bc_loss.backward()
                 self._bc_optim.step()
                 sum_loss += bc_loss.cpu().item()
-            print(f"Epoch {i_epoch}: mean bc loss {sum_loss/i_batch}")
+            print(f"Epoch {i_epoch + 1}: mean bc loss {sum_loss/i_batch}")
         torch.save(self.state_dict(), os.path.join(logger.model_dir, "rambo_reward_learn_shared_pretrain.pth"))
 
     def update_dynamics_and_reward(
         self,
         real_buffer,
-        preference_buffer
+        preference_buffer,
+        normalize_reward: bool = True
     ) -> Tuple[Dict[str, np.ndarray], Dict]:
         all_loss_info = {
             "adv_dynamics_update/all_loss": 0, 
@@ -128,7 +129,7 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
                 # gather new batch of offline data and update the model
                 offline_batch = (observations, actions, sl_observations, sl_actions, sl_next_observations)
                 preference_batch = preference_buffer.sample(self._reward_batch_size)
-                next_observations, terminals, loss_info = self.dynamics_step_and_forward(offline_batch, preference_batch)
+                next_observations, terminals, loss_info = self.dynamics_step_and_forward(offline_batch, preference_batch, normalize_reward)
                 for _key in loss_info:
                     all_loss_info[_key] += loss_info[_key]
                 # nonterm_mask = (~terminals).flatten()
@@ -146,7 +147,8 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
     def dynamics_step_and_forward(
         self,
         offline_batch: Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
-        preference_batch: Dict[str, torch.Tensor]
+        preference_batch: Dict[str, torch.Tensor],
+        normalize_reward: bool
     ):
         observations, actions, sl_observations, sl_actions, sl_next_observations = offline_batch
         obs_act = np.concatenate([observations, actions], axis=-1)
@@ -229,21 +231,34 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
             "adv_reward_update/reward_bce_loss": reward_loss.cpu().item()
         }
         
-    def reward_loss(self, preference_batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def reward_loss(self, preference_batch: Dict[str, torch.Tensor], normalize_reward: bool) -> torch.Tensor:
         obs_actions1 = torch.cat([preference_batch["observations1"], preference_batch["actions1"]], dim=-1)
         obs_actions2 = torch.cat([preference_batch["observations2"], preference_batch["actions2"]], dim=-1)
         
         _, _, ensemble_pred_rew1 = self.dynamics.model(obs_actions1)
         _, _, ensemble_pred_rew2 = self.dynamics.model(obs_actions2)
+        
+        if normalize_reward:
+            ensemble_pred_rew1 = (ensemble_pred_rew1 - ensemble_pred_rew1.mean((1, 2), keepdim=True)) / (ensemble_pred_rew1.std((1, 2), keepdim=True) + 1e-8)
+            ensemble_pred_rew2 = (ensemble_pred_rew2 - ensemble_pred_rew2.mean((1, 2), keepdim=True)) / (ensemble_pred_rew2.std((1, 2), keepdim=True) + 1e-8)
+        
+        # convert to float64 to avoid infs
+        ensemble_pred_rew1 = ensemble_pred_rew1.to(dtype=torch.float64)
+        ensemble_pred_rew2 = ensemble_pred_rew2.to(dtype=torch.float64)
+        
         ensemble_pred_rew1 = ensemble_pred_rew1.sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
         ensemble_pred_rew2 = ensemble_pred_rew2.sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
+        assert (ensemble_pred_rew1 >= 0).all()
+        assert (ensemble_pred_rew2 >= 0).all()
+        assert not torch.isinf(ensemble_pred_rew1).any()
+        assert not torch.isinf(ensemble_pred_rew2).any()
         
         # predicted reward
         ensemble_pred_rewsum = ensemble_pred_rew1 + ensemble_pred_rew2
         label_preds = ensemble_pred_rew1 / ensemble_pred_rewsum # for normalization it is not necessary cuz everything is > 0
         
         # ground truth label from preference dataset
-        label_gt = preference_batch["label"].tile(self.model.num_ensemble, 1) # (num_ensemble,)
+        label_gt = preference_batch["label"].tile(self.model.num_ensemble, 1).to(dtype=torch.float64) # (num_ensemble,)
         loss = F.binary_cross_entropy(label_preds, label_gt)
         return loss
 

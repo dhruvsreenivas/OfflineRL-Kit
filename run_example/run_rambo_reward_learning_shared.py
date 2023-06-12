@@ -68,7 +68,6 @@ def get_args():
     parser.add_argument("--model-retain-epochs", type=int, default=5)
     parser.add_argument("--real-ratio", type=float, default=0.5)
     parser.add_argument("--load-dynamics-path", type=str, default=None)
-    parser.add_argument("--train-w-reward-learning", action="store_true")
     parser.add_argument("--max-grad-norm", type=float, default=None)
     parser.add_argument("--normalize-reward-preds", action="store_true")
 
@@ -86,7 +85,7 @@ def get_args():
     
     # reward learning args
     parser.add_argument("--segment-length", type=int, default=15)
-    parser.add_argument("--dropout-prob", type=float, default=0.2)
+    parser.add_argument("--dropout-prob", type=float, default=0.0)
 
     return parser.parse_args()
 
@@ -192,46 +191,25 @@ def train(args=get_args()):
     
     # create policy
     policy_scaler = StandardScaler(mu=obs_mean, std=obs_std)
-    if args.train_w_reward_learning:
-        policy = RAMBORewardLearningSharedPolicy(
-            dynamics_and_reward,
-            actor,
-            critic1,
-            critic2,
-            actor_optim, 
-            critic1_optim, 
-            critic2_optim, 
-            dynamics_adv_optim,
-            tau=args.tau, 
-            gamma=args.gamma, 
-            alpha=alpha, 
-            adv_weight=args.adv_weight, 
-            adv_rollout_length=args.rollout_length, 
-            adv_rollout_batch_size=args.adv_batch_size,
-            include_ent_in_adv=args.include_ent_in_adv,
-            scaler=policy_scaler,
-            device=args.device
-        ).to(args.device)
-    else:
-        policy = RAMBOPolicy(
-            dynamics_and_reward, 
-            actor, 
-            critic1, 
-            critic2, 
-            actor_optim, 
-            critic1_optim, 
-            critic2_optim, 
-            dynamics_adv_optim,
-            tau=args.tau, 
-            gamma=args.gamma, 
-            alpha=alpha, 
-            adv_weight=args.adv_weight, 
-            adv_rollout_length=args.rollout_length, 
-            adv_rollout_batch_size=args.adv_batch_size,
-            include_ent_in_adv=args.include_ent_in_adv,
-            scaler=policy_scaler,
-            device=args.device
-        ).to(args.device)
+    policy = RAMBORewardLearningSharedPolicy(
+        dynamics_and_reward,
+        actor,
+        critic1,
+        critic2,
+        actor_optim, 
+        critic1_optim, 
+        critic2_optim, 
+        dynamics_adv_optim,
+        tau=args.tau, 
+        gamma=args.gamma, 
+        alpha=alpha, 
+        adv_weight=args.adv_weight, 
+        adv_rollout_length=args.rollout_length, 
+        adv_rollout_batch_size=args.adv_batch_size,
+        include_ent_in_adv=args.include_ent_in_adv,
+        scaler=policy_scaler,
+        device=args.device
+    ).to(args.device)
 
     # log
     log_dirs = make_log_dirs(args.task, args.algo_name, args.seed, vars(args))
