@@ -212,7 +212,7 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         sl_loss = sl_loss + 0.001 * self.dynamics.model.max_logvar.sum() - 0.001 * self.dynamics.model.min_logvar.sum()
         
         # add reward loss here on preference batch to add to supervised loss
-        reward_loss = self.reward_loss(preference_batch)
+        reward_loss = self.reward_loss(preference_batch, normalize_reward)
         sl_loss = sl_loss + reward_loss
         
         all_loss = self._adv_weight * adv_loss + sl_loss

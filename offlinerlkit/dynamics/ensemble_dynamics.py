@@ -180,14 +180,13 @@ class EnsembleDynamics(BaseDynamics):
         while True:
             epoch += 1
             
-            if pref_train_dataset is not None:
-                pref_batch = pref_train_dataset.sample(batch_size)
-            else:
-                pref_batch = None
-            
-            train_loss = self.learn(train_inputs[data_idxes], train_targets[data_idxes], pref_batch, batch_size, logvar_loss_coef, normalize_reward)
+            train_loss = self.learn(train_inputs[data_idxes], train_targets[data_idxes], pref_train_dataset, batch_size, logvar_loss_coef, normalize_reward)
+            print(f'finished one epoch of training.')
             new_holdout_losses = self.validate(holdout_inputs, holdout_targets, pref_val_dataset, normalize_reward)
+            print(f'finished validation.')
             holdout_loss = (np.sort(new_holdout_losses)[:self.model.num_elites]).mean()
+            
+            # log
             logger.logkv("loss/dynamics_train_loss", train_loss)
             logger.logkv("loss/dynamics_holdout_loss", holdout_loss)
             logger.set_timestep(epoch)
@@ -231,7 +230,7 @@ class EnsembleDynamics(BaseDynamics):
         _, _, ensemble_pred_rew1 = self.model(obs_actions1) # (n_ensemble, batch_size, seg_len, 1)
         _, _, ensemble_pred_rew2 = self.model(obs_actions2)
         
-        # normalize rewards before getting label (check again if any nans)
+        # normalize rewards before getting label
         if normalize_reward:
             ensemble_pred_rew1 = (ensemble_pred_rew1 - ensemble_pred_rew1.mean((1, 2), keepdim=True)) / (ensemble_pred_rew1.std((1, 2), keepdim=True) + 1e-8)
             ensemble_pred_rew2 = (ensemble_pred_rew2 - ensemble_pred_rew2.mean((1, 2), keepdim=True)) / (ensemble_pred_rew2.std((1, 2), keepdim=True) + 1e-8)
@@ -262,7 +261,7 @@ class EnsembleDynamics(BaseDynamics):
         self,
         inputs: np.ndarray,
         targets: np.ndarray,
-        pref_batch: Optional[Dict[str, torch.Tensor]],
+        pref_dataset: Optional[PreferenceDataset],
         batch_size: int = 256,
         logvar_loss_coef: float = 0.01,
         normalize_reward: bool = False
@@ -293,7 +292,8 @@ class EnsembleDynamics(BaseDynamics):
             loss = loss + logvar_loss_coef * self.model.max_logvar.sum() - logvar_loss_coef * self.model.min_logvar.sum()
             
             # get reward loss over preference batch
-            if pref_batch is not None:
+            if pref_dataset is not None:
+                pref_batch = pref_dataset.sample(batch_size)
                 reward_loss = self.reward_loss(pref_batch, normalize_reward)
                 loss = loss + reward_loss
             
@@ -323,7 +323,8 @@ class EnsembleDynamics(BaseDynamics):
             loss = ((mean - targets) ** 2).mean(dim=(1, 2))
         else:
             mean, _, _ = self.model(inputs)
-            mse_loss = ((mean - targets) ** 2).mean(dim=(1, 2))
+            targets = targets[..., :-1] # next state only
+            loss = ((mean - targets) ** 2).mean(dim=(1, 2))
             
             # TODO implement reward loss on some number of preference batches
             if preference_dataset is not None:
@@ -333,7 +334,7 @@ class EnsembleDynamics(BaseDynamics):
                     reward_loss += self.reward_loss(batch, normalize_reward=normalize_reward)
                 
                 reward_loss /= inputs.shape[0]
-                loss = mse_loss + reward_loss
+                loss = loss + reward_loss
         
         print(f"validation loss shape: {loss.size()}")
         val_loss = list(loss.cpu().numpy())
