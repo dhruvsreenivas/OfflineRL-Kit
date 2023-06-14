@@ -53,6 +53,7 @@ class EnsembleDynamics(BaseDynamics):
             mean, logvar, reward = self.model(obs_act)
             mean = mean.cpu().numpy()
             logvar = logvar.cpu().numpy()
+            reward = reward.cpu().numpy()
             mean += obs
             std = np.sqrt(np.exp(logvar)) # [n_ensemble, batch_size, s' dim]
 
@@ -89,7 +90,7 @@ class EnsembleDynamics(BaseDynamics):
                 penalty = np.sqrt(next_obses_mean.var(0).mean(1))
             else:
                 raise ValueError
-            
+              
             penalty = np.expand_dims(penalty, 1).astype(np.float32)
             assert penalty.shape == reward.shape
             reward = reward - self._penalty_coef * penalty
@@ -142,6 +143,7 @@ class EnsembleDynamics(BaseDynamics):
         batch_size: int = 256,
         holdout_ratio: float = 0.2,
         logvar_loss_coef: float = 0.01,
+        reward_loss_coef: float = 1.0,
         normalize_reward: bool = False
     ) -> None:
         
@@ -180,15 +182,26 @@ class EnsembleDynamics(BaseDynamics):
         while True:
             epoch += 1
             
-            train_loss = self.learn(train_inputs[data_idxes], train_targets[data_idxes], pref_train_dataset, batch_size, logvar_loss_coef, normalize_reward)
-            print(f'finished one epoch of training.')
-            new_holdout_losses = self.validate(holdout_inputs, holdout_targets, pref_val_dataset, normalize_reward)
-            print(f'finished validation.')
+            train_loss, train_reward_loss = self.learn(
+                train_inputs[data_idxes], 
+                train_targets[data_idxes],
+                pref_train_dataset,
+                batch_size,
+                logvar_loss_coef,
+                reward_loss_coef,
+                normalize_reward
+            )
+            # print(f'finished one epoch of training.')
+            new_holdout_losses, new_reward_losses = self.validate(holdout_inputs, holdout_targets, pref_val_dataset, normalize_reward)
+            # print(f'finished validation.')
             holdout_loss = (np.sort(new_holdout_losses)[:self.model.num_elites]).mean()
+            holdout_reward_loss = (np.sort(new_reward_losses)[:self.model.num_elites]).mean()
             
             # log
-            logger.logkv("loss/dynamics_train_loss", train_loss)
-            logger.logkv("loss/dynamics_holdout_loss", holdout_loss)
+            logger.logkv("loss/dynamics_and_reward_train_loss", train_loss)
+            logger.logkv("loss/dynamics_and_reward_holdout_loss", holdout_loss)
+            logger.logkv("loss/reward_train_loss", train_reward_loss)
+            logger.logkv("loss/reward_holdout_loss", holdout_reward_loss)
             logger.set_timestep(epoch)
             logger.dumpkvs(exclude=["policy_training_progress"])
 
@@ -222,7 +235,8 @@ class EnsembleDynamics(BaseDynamics):
     def reward_loss(
         self,
         pref_batch: Dict[str, torch.Tensor],
-        normalize_reward: bool = True
+        normalize_reward: bool = True,
+        reduction: str = 'mean'
     ) -> torch.Tensor:
         obs_actions1 = torch.cat([pref_batch["observations1"], pref_batch["actions1"]], dim=-1).float()
         obs_actions2 = torch.cat([pref_batch["observations2"], pref_batch["actions2"]], dim=-1).float()
@@ -254,7 +268,7 @@ class EnsembleDynamics(BaseDynamics):
         # ground truth label from preference dataset
         label_gt = pref_batch["label"].tile(self.model.num_ensemble, 1).to(dtype=torch.float64) # (num_ensemble, batch_size)
         
-        reward_loss = F.binary_cross_entropy(label_preds, label_gt)
+        reward_loss = F.binary_cross_entropy(label_preds, label_gt, reduction=reduction)
         return reward_loss
     
     def learn(
@@ -264,11 +278,13 @@ class EnsembleDynamics(BaseDynamics):
         pref_dataset: Optional[PreferenceDataset],
         batch_size: int = 256,
         logvar_loss_coef: float = 0.01,
+        reward_loss_coef: float = 1.0,
         normalize_reward: bool = False
     ) -> float:
         self.model.train()
         train_size = inputs.shape[1]
         losses = []
+        reward_losses = []
 
         for batch_num in range(int(np.ceil(train_size / batch_size))):
             inputs_batch = inputs[:, batch_num * batch_size:(batch_num + 1) * batch_size]
@@ -295,7 +311,8 @@ class EnsembleDynamics(BaseDynamics):
             if pref_dataset is not None:
                 pref_batch = pref_dataset.sample(batch_size)
                 reward_loss = self.reward_loss(pref_batch, normalize_reward)
-                loss = loss + reward_loss
+                loss = loss + reward_loss_coef * reward_loss
+                reward_losses.append(reward_loss.item())
             
             self.optim.zero_grad()
             loss.backward()
@@ -305,7 +322,8 @@ class EnsembleDynamics(BaseDynamics):
             self.optim.step()
 
             losses.append(loss.item())
-        return np.mean(losses)
+        
+        return np.mean(losses), np.mean(reward_losses)
     
     @torch.no_grad()
     def validate(
@@ -317,6 +335,7 @@ class EnsembleDynamics(BaseDynamics):
     ) -> List[float]:
         self.model.eval()
         targets = torch.as_tensor(targets).to(self.model.device)
+        reward_losses = None
         
         if isinstance(self.model, EnsembleDynamicsModel):
             mean, _ = self.model(inputs)
@@ -331,14 +350,15 @@ class EnsembleDynamics(BaseDynamics):
                 reward_loss = 0.0
                 for _ in range(len(preference_dataset) // inputs.shape[0]):
                     batch = preference_dataset.sample(inputs.shape[0])
-                    reward_loss += self.reward_loss(batch, normalize_reward=normalize_reward)
+                    reward_loss += self.reward_loss(batch, normalize_reward=normalize_reward, reduction='none').mean(-1) # (n_ensemble,)
                 
                 reward_loss /= inputs.shape[0]
                 loss = loss + reward_loss
+                reward_losses = list(reward_loss.cpu().numpy())
         
-        print(f"validation loss shape: {loss.size()}")
+        # print(f"validation loss shape: {loss.size()}")
         val_loss = list(loss.cpu().numpy())
-        return val_loss
+        return val_loss, reward_losses
     
     def select_elites(self, metrics: List) -> List[int]:
         pairs = [(metric, index) for metric, index in zip(metrics, range(len(metrics)))]

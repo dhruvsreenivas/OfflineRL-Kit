@@ -11,6 +11,7 @@ from operator import itemgetter
 from offlinerlkit.utils.scaler import StandardScaler
 from offlinerlkit.policy import MOPOPolicy
 from offlinerlkit.dynamics import BaseDynamics
+from offlinerlkit.modules import EnsembleDynamicsModel, EnsembleDynamicsModelWithSeparateReward
 
 
 class RAMBORewardLearningSharedPolicy(MOPOPolicy):
@@ -33,6 +34,8 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         tau: float = 0.005,
         gamma: float = 0.99,
         alpha: Union[float, Tuple[float, torch.Tensor, torch.optim.Optimizer]] = 0.2,
+        reward_loss_coef: float = 1.0,
+        normalize_reward: bool = True,
         adv_weight: float = 0,
         adv_train_steps: int = 1000,
         adv_rollout_batch_size: int = 256,
@@ -56,6 +59,8 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         )
         
         self._dynamics_reward_adv_optim = dynamics_reward_adv_optim
+        self._reward_loss_coef = reward_loss_coef
+        self._normalize_reward = normalize_reward
         self._adv_weight = adv_weight
         self._adv_train_steps = adv_train_steps
         self._adv_rollout_batch_size = adv_rollout_batch_size
@@ -99,8 +104,7 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
     def update_dynamics_and_reward(
         self,
         real_buffer,
-        preference_buffer,
-        normalize_reward: bool = True
+        preference_buffer
     ) -> Tuple[Dict[str, np.ndarray], Dict]:
         all_loss_info = {
             "adv_dynamics_update/all_loss": 0, 
@@ -129,7 +133,7 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
                 # gather new batch of offline data and update the model
                 offline_batch = (observations, actions, sl_observations, sl_actions, sl_next_observations)
                 preference_batch = preference_buffer.sample(self._reward_batch_size)
-                next_observations, terminals, loss_info = self.dynamics_step_and_forward(offline_batch, preference_batch, normalize_reward)
+                next_observations, terminals, loss_info = self.dynamics_step_and_forward(offline_batch, preference_batch, self._normalize_reward)
                 for _key in loss_info:
                     all_loss_info[_key] += loss_info[_key]
                 # nonterm_mask = (~terminals).flatten()
@@ -203,7 +207,11 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         sl_input = torch.cat([sl_observations, sl_actions], dim=-1).cpu().numpy()
         sl_target = sl_next_observations - sl_observations # we're only computing s' - s here, no reward term!
         sl_input = self.dynamics.scaler.transform(sl_input)
-        sl_mean, sl_logvar = self.dynamics.model(sl_input)
+        if isinstance(self.dynamics.model, EnsembleDynamicsModel):
+            sl_mean, sl_logvar = self.dynamics.model(sl_input)
+        else:
+            sl_mean, sl_logvar, _ = self.dynamics.model(sl_input)
+        
         sl_inv_var = torch.exp(-sl_logvar)
         sl_mse_loss_inv = (torch.pow(sl_mean - sl_target, 2) * sl_inv_var).mean(dim=(1, 2))
         sl_var_loss = sl_logvar.mean(dim=(1, 2))
@@ -212,8 +220,9 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         sl_loss = sl_loss + 0.001 * self.dynamics.model.max_logvar.sum() - 0.001 * self.dynamics.model.min_logvar.sum()
         
         # add reward loss here on preference batch to add to supervised loss
-        reward_loss = self.reward_loss(preference_batch, normalize_reward)
-        sl_loss = sl_loss + reward_loss
+        if isinstance(self.dynamics.model, EnsembleDynamicsModelWithSeparateReward):
+            reward_loss = self.reward_loss(preference_batch, normalize_reward)
+            sl_loss = sl_loss + self._reward_loss_coef * reward_loss
         
         all_loss = self._adv_weight * adv_loss + sl_loss
         
@@ -258,7 +267,7 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         label_preds = ensemble_pred_rew1 / ensemble_pred_rewsum # for normalization it is not necessary cuz everything is > 0
         
         # ground truth label from preference dataset
-        label_gt = preference_batch["label"].tile(self.model.num_ensemble, 1).to(dtype=torch.float64) # (num_ensemble,)
+        label_gt = preference_batch["label"].tile(self.dynamics.model.num_ensemble, 1).to(dtype=torch.float64) # (num_ensemble,)
         loss = F.binary_cross_entropy(label_preds, label_gt)
         return loss
 

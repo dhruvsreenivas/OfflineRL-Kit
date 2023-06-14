@@ -86,6 +86,7 @@ def get_args():
     # reward learning args
     parser.add_argument("--segment-length", type=int, default=15)
     parser.add_argument("--dropout-prob", type=float, default=0.0)
+    parser.add_argument("--reward-loss-coef", type=float, default=1.0)
 
     return parser.parse_args()
 
@@ -202,8 +203,10 @@ def train(args=get_args()):
         dynamics_adv_optim,
         tau=args.tau, 
         gamma=args.gamma, 
-        alpha=alpha, 
-        adv_weight=args.adv_weight, 
+        alpha=alpha,
+        reward_loss_coef=args.reward_loss_coef,
+        normalize_reward=args.normalize_reward_preds,
+        adv_weight=args.adv_weight,
         adv_rollout_length=args.rollout_length, 
         adv_rollout_batch_size=args.adv_batch_size,
         include_ent_in_adv=args.include_ent_in_adv,
@@ -257,11 +260,12 @@ def train(args=get_args()):
             logger,
             holdout_ratio=0.1,
             logvar_loss_coef=0.001,
+            reward_loss_coef=args.reward_loss_coef,
             max_epochs_since_update=10,
             normalize_reward=args.normalize_reward_preds
         )
 
-    # train policy (either with reward model adversarially (our approach) or treating as GT (no reward))
+    # train policy
     policy_trainer.train()
 
 
