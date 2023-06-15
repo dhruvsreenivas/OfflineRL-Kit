@@ -6,6 +6,7 @@ import random
 
 import gym
 import d4rl
+import os
 
 import numpy as np
 import torch
@@ -19,7 +20,7 @@ from offlinerlkit.utils.termination_fns import get_termination_fn, obs_unnormali
 from offlinerlkit.buffer import ReplayBuffer
 from offlinerlkit.utils.logger import Logger, make_log_dirs
 from offlinerlkit.policy_trainer import PrefMBPolicyTrainer
-from offlinerlkit.policy import RAMBOPolicy, RAMBORewardLearningSharedPolicy
+from offlinerlkit.policy import RAMBORewardLearningSharedPolicy
 
 
 """
@@ -54,6 +55,7 @@ def get_args():
     parser.add_argument("--auto-alpha", default=True)
     parser.add_argument("--target-entropy", type=int, default=None)
     parser.add_argument("--alpha-lr", type=float, default=1e-4)
+    parser.add_argument("--l2-penalty-coef", type=float, default=0.0)
 
     parser.add_argument("--dynamics-hidden-dims", type=int, nargs='*', default=[200, 200, 200, 200])
     parser.add_argument("--dynamics-weight-decay", type=float, nargs='*', default=[2.5e-5, 5e-5, 7.5e-5, 7.5e-5, 1e-4])
@@ -69,7 +71,9 @@ def get_args():
     parser.add_argument("--real-ratio", type=float, default=0.5)
     parser.add_argument("--load-dynamics-path", type=str, default=None)
     parser.add_argument("--max-grad-norm", type=float, default=None)
-    parser.add_argument("--normalize-reward-preds", action="store_true")
+    parser.add_argument("--normalize-reward-train", action="store_true")
+    parser.add_argument("--normalize-reward-eval", action="store_true")
+    parser.add_argument("--save-dynamics-model-after-train", action="store_true")
 
     parser.add_argument("--epoch", type=int, default=2000)
     parser.add_argument("--step-per-epoch", type=int, default=1000)
@@ -174,11 +178,13 @@ def train(args=get_args()):
     )
     dynamics_optim = torch.optim.Adam(
         dynamics_model.parameters(),
-        lr=args.dynamics_lr
+        lr=args.dynamics_lr,
+        weight_decay=args.l2_penalty_coef
     )
     dynamics_adv_optim = torch.optim.Adam(
         dynamics_model.parameters(), 
-        lr=args.dynamics_adv_lr
+        lr=args.dynamics_adv_lr,
+        weight_decay=args.l2_penalty_coef
     )
     dynamics_scaler = StandardScaler()
     termination_fn = obs_unnormalization(get_termination_fn(task=args.task), obs_mean, obs_std)
@@ -205,7 +211,8 @@ def train(args=get_args()):
         gamma=args.gamma, 
         alpha=alpha,
         reward_loss_coef=args.reward_loss_coef,
-        normalize_reward=args.normalize_reward_preds,
+        normalize_reward_train=args.normalize_reward_train,
+        normalize_reward_eval=args.normalize_reward_eval,
         adv_weight=args.adv_weight,
         adv_rollout_length=args.rollout_length, 
         adv_rollout_batch_size=args.adv_batch_size,
@@ -262,8 +269,14 @@ def train(args=get_args()):
             logvar_loss_coef=0.001,
             reward_loss_coef=args.reward_loss_coef,
             max_epochs_since_update=10,
-            normalize_reward=args.normalize_reward_preds
+            normalize_reward_train=args.normalize_reward_train,
+            normalize_reward_eval=args.normalize_reward_eval
         )
+        
+        # if we should save dynamics model, we save
+        if args.save_dynamics_model_after_train:
+            dynamics_save_path = os.path.join(logger.checkpoint_dir, "dynamics_pretrain.pth")
+            torch.save(dynamics_and_reward, dynamics_save_path)
 
     # train policy
     policy_trainer.train()

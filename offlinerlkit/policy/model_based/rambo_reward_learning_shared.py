@@ -35,7 +35,8 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         gamma: float = 0.99,
         alpha: Union[float, Tuple[float, torch.Tensor, torch.optim.Optimizer]] = 0.2,
         reward_loss_coef: float = 1.0,
-        normalize_reward: bool = True,
+        normalize_reward_train: bool = False,
+        normalize_reward_eval: bool = True,
         adv_weight: float = 0,
         adv_train_steps: int = 1000,
         adv_rollout_batch_size: int = 256,
@@ -60,7 +61,8 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         
         self._dynamics_reward_adv_optim = dynamics_reward_adv_optim
         self._reward_loss_coef = reward_loss_coef
-        self._normalize_reward = normalize_reward
+        self._normalize_reward_train = normalize_reward_train
+        self._normalize_reward_eval = normalize_reward_eval
         self._adv_weight = adv_weight
         self._adv_train_steps = adv_train_steps
         self._adv_rollout_batch_size = adv_rollout_batch_size
@@ -133,7 +135,7 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
                 # gather new batch of offline data and update the model
                 offline_batch = (observations, actions, sl_observations, sl_actions, sl_next_observations)
                 preference_batch = preference_buffer.sample(self._reward_batch_size)
-                next_observations, terminals, loss_info = self.dynamics_step_and_forward(offline_batch, preference_batch, self._normalize_reward)
+                next_observations, terminals, loss_info = self.dynamics_step_and_forward(offline_batch, preference_batch, self._normalize_reward_train)
                 for _key in loss_info:
                     all_loss_info[_key] += loss_info[_key]
                 # nonterm_mask = (~terminals).flatten()
@@ -285,7 +287,7 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         observations = init_obss
         for _ in range(rollout_length):
             actions = super().select_action(observations)
-            next_observations, rewards, terminals, info = self.dynamics.step(observations, actions)
+            next_observations, rewards, terminals, info = self.dynamics.step(observations, actions, self._normalize_reward_eval)
             rollout_transitions["obss"].append(observations)
             rollout_transitions["next_obss"].append(next_observations)
             rollout_transitions["actions"].append(actions)

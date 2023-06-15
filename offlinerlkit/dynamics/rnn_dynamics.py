@@ -26,9 +26,12 @@ class RNNDynamics(BaseDynamics):
     def step(
         self,
         obss: np.ndarray,
-        actions: np.ndarray
+        actions: np.ndarray,
+        normalize_reward: bool
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict]:
         "imagine single forward step"
+        del normalize_reward
+        
         inputs = np.concatenate([obss, actions], axis=-1)
         inputs = self.scaler.transform(inputs)
         preds, _ = self.model(inputs)

@@ -18,6 +18,7 @@ class BaseDynamics(object):
     def step(
         self,
         obs: np.ndarray,
-        action: np.ndarray
+        action: np.ndarray,
+        normalize_reward: bool
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict]:
         raise NotImplementedError

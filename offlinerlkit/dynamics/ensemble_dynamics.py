@@ -36,7 +36,8 @@ class EnsembleDynamics(BaseDynamics):
     def step(
         self,
         obs: np.ndarray,
-        action: np.ndarray
+        action: np.ndarray,
+        normalize_reward: bool = True
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict]:
         "imagine single forward step"
         obs_act = np.concatenate([obs, action], axis=-1)
@@ -95,6 +96,11 @@ class EnsembleDynamics(BaseDynamics):
             assert penalty.shape == reward.shape
             reward = reward - self._penalty_coef * penalty
             info["penalty"] = penalty
+            
+        # if we want to normalize, normalize to have standard deviation 1 -- rewards have shape (num_elites, batch_size, 1)
+        if normalize_reward:
+            # standard deviation over batch only -- no need to do over ensemble
+            reward = reward / (reward.std(axis=1, keepdims=True) + 1e-8)
         
         return next_obs, reward, terminal, info
     
@@ -144,7 +150,8 @@ class EnsembleDynamics(BaseDynamics):
         holdout_ratio: float = 0.2,
         logvar_loss_coef: float = 0.01,
         reward_loss_coef: float = 1.0,
-        normalize_reward: bool = False
+        normalize_reward_train: bool = False,
+        normalize_reward_val: bool = True
     ) -> None:
         
         inputs, targets = self.format_samples_for_training(data)
@@ -189,13 +196,16 @@ class EnsembleDynamics(BaseDynamics):
                 batch_size,
                 logvar_loss_coef,
                 reward_loss_coef,
-                normalize_reward
+                normalize_reward_train
             )
             # print(f'finished one epoch of training.')
-            new_holdout_losses, new_reward_losses = self.validate(holdout_inputs, holdout_targets, pref_val_dataset, normalize_reward)
+            new_holdout_losses, new_reward_losses = self.validate(holdout_inputs, holdout_targets, pref_val_dataset, normalize_reward_eval)
             # print(f'finished validation.')
             holdout_loss = (np.sort(new_holdout_losses)[:self.model.num_elites]).mean()
-            holdout_reward_loss = (np.sort(new_reward_losses)[:self.model.num_elites]).mean()
+            if isinstance(self.model, EnsembleDynamicsModelWithSeparateReward):
+                holdout_reward_loss = (np.sort(new_reward_losses)[:self.model.num_elites]).mean()
+            else:
+                holdout_reward_loss = 0.0 # baseline meaning you didn't actually train a separate reward predictor
             
             # log
             logger.logkv("loss/dynamics_and_reward_train_loss", train_loss)
@@ -236,7 +246,7 @@ class EnsembleDynamics(BaseDynamics):
         self,
         pref_batch: Dict[str, torch.Tensor],
         normalize_reward: bool = True,
-        reduction: str = 'mean'
+        reduction: str = 'sum'
     ) -> torch.Tensor:
         obs_actions1 = torch.cat([pref_batch["observations1"], pref_batch["actions1"]], dim=-1).float()
         obs_actions2 = torch.cat([pref_batch["observations2"], pref_batch["actions2"]], dim=-1).float()

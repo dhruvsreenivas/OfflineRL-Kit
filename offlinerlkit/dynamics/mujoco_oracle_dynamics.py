@@ -20,8 +20,11 @@ class MujocoOracleDynamics(object):
     def step(
         self,
         obs: np.ndarray,
-        action: np.ndarray
+        action: np.ndarray,
+        normalize_reward: bool
     ) -> Tuple[np.ndarray, float, bool, Dict]:
+        del normalize_reward
+        
         if (len(obs.shape) > 1) or (len(action.shape) > 1):
             raise ValueError
         self._set_state_from_obs(obs)
