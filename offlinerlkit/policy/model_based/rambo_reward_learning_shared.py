@@ -250,8 +250,8 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         _, _, ensemble_pred_rew2 = self.dynamics.model(obs_actions2)
         
         if normalize_reward:
-            ensemble_pred_rew1 = (ensemble_pred_rew1 - ensemble_pred_rew1.mean((1, 2), keepdim=True)) / (ensemble_pred_rew1.std((1, 2), keepdim=True) + 1e-8)
-            ensemble_pred_rew2 = (ensemble_pred_rew2 - ensemble_pred_rew2.mean((1, 2), keepdim=True)) / (ensemble_pred_rew2.std((1, 2), keepdim=True) + 1e-8)
+            ensemble_pred_rew1 = ensemble_pred_rew1 / (ensemble_pred_rew1.std((1, 2), keepdim=True) + 1e-8)
+            ensemble_pred_rew2 = ensemble_pred_rew2 / (ensemble_pred_rew2.std((1, 2), keepdim=True) + 1e-8)
         
         # convert to float64 to avoid infs
         ensemble_pred_rew1 = ensemble_pred_rew1.to(dtype=torch.float64)

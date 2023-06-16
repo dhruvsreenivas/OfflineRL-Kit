@@ -55,7 +55,6 @@ def get_args():
     parser.add_argument("--auto-alpha", default=True)
     parser.add_argument("--target-entropy", type=int, default=None)
     parser.add_argument("--alpha-lr", type=float, default=1e-4)
-    parser.add_argument("--l2-penalty-coef", type=float, default=0.0)
 
     parser.add_argument("--dynamics-hidden-dims", type=int, nargs='*', default=[200, 200, 200, 200])
     parser.add_argument("--dynamics-weight-decay", type=float, nargs='*', default=[2.5e-5, 5e-5, 7.5e-5, 7.5e-5, 1e-4])
@@ -89,8 +88,11 @@ def get_args():
     
     # reward learning args
     parser.add_argument("--segment-length", type=int, default=15)
-    parser.add_argument("--dropout-prob", type=float, default=0.0)
+    parser.add_argument("--reward-weight-decay", type=float, default=None)
+    parser.add_argument("--dropout-probs", type=float, nargs='*', default=[0.0, 0.0, 0.0, 0.5])
+    parser.add_argument("--reward-final-activation", type=str, default='none')
     parser.add_argument("--reward-loss-coef", type=float, default=1.0)
+    parser.add_argument("--l2-penalty-coef", type=float, default=0.0)
 
     return parser.parse_args()
 
@@ -173,7 +175,9 @@ def train(args=get_args()):
         num_ensemble=args.n_ensemble,
         num_elites=args.n_elites,
         weight_decays=args.dynamics_weight_decay,
-        dropout_prob=args.dropout_prob,
+        reward_weight_decay=args.reward_weight_decay,
+        dropout_probs=args.dropout_probs,
+        reward_final_activation=args.reward_final_activation,
         device=args.device
     )
     dynamics_optim = torch.optim.Adam(
@@ -270,12 +274,12 @@ def train(args=get_args()):
             reward_loss_coef=args.reward_loss_coef,
             max_epochs_since_update=10,
             normalize_reward_train=args.normalize_reward_train,
-            normalize_reward_eval=args.normalize_reward_eval
+            normalize_reward_val=args.normalize_reward_eval
         )
         
         # if we should save dynamics model, we save
         if args.save_dynamics_model_after_train:
-            dynamics_save_path = os.path.join(logger.checkpoint_dir, "dynamics_pretrain.pth")
+            dynamics_save_path = os.path.join(logger.checkpoint_dir, "pretrained_dynamics.pth")
             torch.save(dynamics_and_reward, dynamics_save_path)
 
     # train policy

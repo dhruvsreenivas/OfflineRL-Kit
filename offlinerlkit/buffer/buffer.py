@@ -412,7 +412,7 @@ class TrajectoryBuffer:
         dataset = torch.load(path, map_location=self.device)
         self.trajectory_preference_dataset = dataset
         
-    def generate_snippet_preference_dataset(self, name: str) -> None:
+    def generate_snippet_preference_dataset(self, name: str, sample_label: bool = True) -> None:
         # if there is something hella small in the dataset (smaller than segment length), then we use that
         self.segment_length = min(self.segment_length, min(self.traj_lengths))
         num_pairs = int(self.size) // self.segment_length
@@ -440,14 +440,17 @@ class TrajectoryBuffer:
             rew1 = np.sum(snip1["rewards"])
             rew2 = np.sum(snip2["rewards"])
             diff = torch.sigmoid(torch.tensor(rew1 - rew2))
-            label = torch.bernoulli(diff) # this is the label -> 0 if 1 < 2, 1 if not
+            if sample_label:
+                label = torch.bernoulli(diff) # this is the label -> 0 if 1 < 2, 1 if not
+            else:
+                label = torch.as_tensor(int(rew1 > rew2))
             
             datapoints.append((snip1, snip2, label))
         
         offline_dataset = PreferenceDataset(datapoints, self.device)
         
         # save dataset somewhere for future reference so we can load this as fixed later
-        torch.save(offline_dataset, f"/home/ds844/OfflineRL-Kit/offline_data/{name}_snippet_preference_dataset_seglen{self.segment_length}.pt")
+        torch.save(offline_dataset, f"/home/ds844/OfflineRL-Kit/offline_data/{name}_snippet_preference_dataset_seglen{self.segment_length}_{'deterministic' if sample_label else ''}.pt")
         
         # set as class variable
         self.snippet_preference_dataset = offline_dataset

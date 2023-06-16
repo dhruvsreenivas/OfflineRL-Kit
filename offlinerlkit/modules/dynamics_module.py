@@ -39,7 +39,7 @@ class EnsembleDynamicsModel(nn.Module):
         activation: nn.Module = Swish,
         weight_decays: Optional[Union[List[float], Tuple[float]]] = None,
         with_reward: bool = True,
-        dropout_prob: float = 0.0,
+        dropout_probs: Optional[Union[List[float], Tuple[float]]] = None,
         device: str = "cpu"
     ) -> None:
         super().__init__()
@@ -53,12 +53,17 @@ class EnsembleDynamicsModel(nn.Module):
 
         if weight_decays is not None:
             assert len(weight_decays) == (len(hidden_dims) + 1)
+            
+        if dropout_probs is not None:
+            assert len(dropout_probs) == len(hidden_dims) # not doing dropout on last layer
+        else:
+            dropout_probs = [0.0] * len(hidden_dims)
 
         module_list = []
         hidden_dims = [obs_dim+action_dim] + list(hidden_dims)
         if weight_decays is None:
             weight_decays = [0.0] * (len(hidden_dims) + 1)
-        for in_dim, out_dim, weight_decay in zip(hidden_dims[:-1], hidden_dims[1:], weight_decays[:-1]):
+        for in_dim, out_dim, weight_decay, dropout_prob in zip(hidden_dims[:-1], hidden_dims[1:], weight_decays[:-1], dropout_probs):
             module_list.append(EnsembleLinear(in_dim, out_dim, num_ensemble, weight_decay))
             if dropout_prob:
                 module_list.append(nn.Dropout(p=dropout_prob))
@@ -71,7 +76,6 @@ class EnsembleDynamicsModel(nn.Module):
             num_ensemble,
             weight_decays[-1]
         )
-        self.use_dropout = dropout_prob > 0
 
         self.register_parameter(
             "max_logvar",
@@ -145,7 +149,9 @@ class EnsembleDynamicsModelWithSeparateReward(nn.Module):
         num_elites: int = 5,
         activation: nn.Module = Swish,
         weight_decays: Optional[Union[List[float], Tuple[float]]] = None,
-        dropout_prob: float = 0.0,
+        reward_weight_decay: Optional[float] = None,
+        dropout_probs: Optional[Union[List[float], Tuple[float]]] = None,
+        reward_final_activation: str = 'none',
         device: str = "cpu"
     ) -> None:
         super().__init__()
@@ -158,13 +164,18 @@ class EnsembleDynamicsModelWithSeparateReward(nn.Module):
 
         if weight_decays is not None:
             assert len(weight_decays) == (len(hidden_dims) + 1)
+            
+        if dropout_probs is not None:
+            assert len(dropout_probs) == len(hidden_dims) # not doing dropout on last layer
+        else:
+            dropout_probs = [0.0] * len(hidden_dims)
 
         module_list = []
         hidden_dims = [obs_dim+action_dim] + list(hidden_dims)
         if weight_decays is None:
             weight_decays = [0.0] * (len(hidden_dims) + 1)
         
-        for in_dim, out_dim, weight_decay in zip(hidden_dims[:-1], hidden_dims[1:], weight_decays[:-1]):
+        for in_dim, out_dim, weight_decay, dropout_prob in zip(hidden_dims[:-1], hidden_dims[1:], weight_decays[:-1], dropout_probs):
             module_list.append(EnsembleLinear(in_dim, out_dim, num_ensemble, weight_decay))
             if dropout_prob:
                 module_list.append(nn.Dropout(p=dropout_prob))
@@ -178,13 +189,16 @@ class EnsembleDynamicsModelWithSeparateReward(nn.Module):
             num_ensemble,
             weight_decays[-1]
         )
+        
+        # bce parameters
+        rew_wd = reward_weight_decay if reward_weight_decay is not None else weight_decays[-1]
         self.reward_layer = EnsembleLinear(
             hidden_dims[-1],
             1,
             num_ensemble,
-            weight_decays[-1]
+            rew_wd
         )
-        self.use_dropout = dropout_prob > 0
+        self.reward_final_activation = reward_final_activation
 
         # min and max logvar only matter in obs dim case (Gaussian)
         self.register_parameter(
@@ -207,16 +221,18 @@ class EnsembleDynamicsModelWithSeparateReward(nn.Module):
         obs_action = torch.as_tensor(obs_action, dtype=torch.float32).to(self.device)
         output = obs_action
         for layer in self.backbones:
-            output = layer(output)
-            if self.use_dropout:
-                # only do activation after dropout
-                if isinstance(layer, nn.Dropout):
-                    output = self.activation(output)
-            else:
-                output = self.activation(output)
+            output = self.activation(layer(output))
             
+        # next state stuff
         sp_mean, sp_logvar = torch.chunk(self.next_state_layer(output), 2, dim=-1)
+        
+        # reward stuff
         reward = self.reward_layer(output)
+        if self.reward_final_activation == 'sigmoid':
+            reward = F.sigmoid(reward)
+        elif self.reward_final_activation == 'relu':
+            reward = F.relu(reward)
+        
         sp_logvar = soft_clamp(sp_logvar, self.min_logvar, self.max_logvar)
         return sp_mean, sp_logvar, reward
 
