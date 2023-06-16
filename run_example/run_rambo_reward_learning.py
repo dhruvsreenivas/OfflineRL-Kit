@@ -57,6 +57,7 @@ def get_args():
     parser.add_argument("--alpha-lr", type=float, default=1e-4)
 
     parser.add_argument("--dynamics-hidden-dims", type=int, nargs='*', default=[200, 200, 200, 200])
+    parser.add_argument("--dynamics-dropout-probs", type=float, nargs='*', default=[0.0, 0.0, 0.0, 0.0])
     parser.add_argument("--dynamics-weight-decay", type=float, nargs='*', default=[2.5e-5, 5e-5, 7.5e-5, 7.5e-5, 1e-4])
     parser.add_argument("--n-ensemble", type=int, default=7)
     parser.add_argument("--n-elites", type=int, default=5)
@@ -85,6 +86,7 @@ def get_args():
     
     # reward learning args
     parser.add_argument("--reward-hidden-dims", type=int, nargs='*', default=[200, 200, 200, 200])
+    parser.add_argument("--reward-dropout-probs", type=float, nargs='*', default=[0.0, 0.0, 0.0, 0.5])
     parser.add_argument("--reward-weight-decay", type=float, nargs='*', default=[0.0, 0.0, 0.0, 0.0, 0.0])
     parser.add_argument("--reward-lr", type=float, default=3e-4)
     parser.add_argument("--n-reward_models", type=int, default=7)
@@ -96,6 +98,7 @@ def get_args():
     parser.add_argument("--reward-penalty-coef", type=float, default=1.0)
     parser.add_argument("--reward_batch_size", type=int, default=100)
     parser.add_argument("--reward-uncertainty-mode", type=str, default="aleatoric")
+    parser.add_argument("--reward-final-activation", type=str, default="none")
 
     return parser.parse_args()
 
@@ -179,6 +182,8 @@ def train(args=get_args()):
         num_ensemble=args.n_ensemble,
         num_elites=args.n_elites,
         weight_decays=args.dynamics_weight_decay,
+        with_reward=False,
+        dropout_probs=args.dynamics_dropout_probs,
         device=args.device
     )
     dynamics_optim = torch.optim.Adam(
@@ -207,6 +212,8 @@ def train(args=get_args()):
         num_elites=args.n_elites,
         with_action=args.reward_with_action,
         weight_decays=args.reward_weight_decay,
+        dropout_probs=args.reward_dropout_probs,
+        reward_final_activation=args.reward_final_activation,
         device=args.device
     )
     reward_optim = torch.optim.Adam(

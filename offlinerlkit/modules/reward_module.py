@@ -19,7 +19,8 @@ class EnsembleRewardModel(nn.Module):
         activation: nn.Module = Swish,
         with_action: bool = True,
         weight_decays: Optional[Union[List[float], Tuple[float]]] = None,
-        dropout_prob: float = 0.0,
+        dropout_probs: Union[List[float], Tuple[float]] = None,
+        reward_final_activation: str = 'none',
         device: str = "cpu"
     ) -> None:
         super().__init__()
@@ -38,20 +39,26 @@ class EnsembleRewardModel(nn.Module):
         dims = [obs_dim + (action_dim if with_action else 0)] + list(hidden_dims)
         if weight_decays is None:
             weight_decays = [0.0] * (len(hidden_dims) + 1)
+            
+        if dropout_probs is not None:
+            assert len(dropout_probs) == len(hidden_dims)
+        else:
+            dropout_probs = [0.0] * len(hidden_dims)
         
-        for in_dim, out_dim, weight_decay in zip(dims[:-1], dims[1:], weight_decays[:-1]):
+        for in_dim, out_dim, weight_decay, dropout_prob in zip(dims[:-1], dims[1:], weight_decays[:-1], dropout_probs):
             module_list.append(EnsembleLinear(in_dim, out_dim, num_ensemble, weight_decay))
             if dropout_prob:
                 module_list.append(nn.Dropout(p=dropout_prob))
         self.backbones = nn.ModuleList(module_list)
         
-        # this is binary classification trained with MLE, so 1 output for the positive logit
+        # this is binary classification trained with MLE, so 1 output for the positive logit (no dropout on final output)
         self.output_layer = EnsembleLinear(
             dims[-1],
             1,
             num_ensemble,
             weight_decays[-1]
         )
+        self.reward_final_activation = reward_final_activation
         
         # register elite parameters and move to device
         self.register_parameter(
@@ -76,18 +83,21 @@ class EnsembleRewardModel(nn.Module):
     
     def load_save(self) -> None:
         for layer in self.backbones:
-            layer.load_save()
+            if not isinstance(layer, nn.Dropout):
+                layer.load_save()
         self.output_layer.load_save()
 
     def update_save(self, indexes: List[int]) -> None:
         for layer in self.backbones:
-            layer.update_save(indexes)
+            if not isinstance(layer, nn.Dropout):
+                layer.update_save(indexes)
         self.output_layer.update_save(indexes)
     
     def get_decay_loss(self) -> torch.Tensor:
         decay_loss = 0
         for layer in self.backbones:
-            decay_loss += layer.get_decay_loss()
+            if not isinstance(layer, nn.Dropout):
+                decay_loss += layer.get_decay_loss()
         decay_loss += self.output_layer.get_decay_loss()
         return decay_loss
 

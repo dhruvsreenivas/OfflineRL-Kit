@@ -238,16 +238,28 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
             "adv_reward_update/reward_bce_loss": reward_loss.cpu().item()
         }
         
-    def reward_loss(self, preference_batch: Dict[str, torch.Tensor]) -> torch.Tensor:
-        ensemble_pred_rew1 = self.reward.model(preference_batch["observations1"], preference_batch["actions1"]).sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
-        ensemble_pred_rew2 = self.reward.model(preference_batch["observations2"], preference_batch["actions2"]).sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
+    def reward_loss(self, preference_batch: Dict[str, torch.Tensor], normalize_reward: bool) -> torch.Tensor:
+        ensemble_pred_rew1 = self.reward.model(preference_batch["observations1"], preference_batch["actions1"])
+        ensemble_pred_rew2 = self.reward.model(preference_batch["observations2"], preference_batch["actions2"])
+        
+        # normalize if need be
+        if normalize_reward:
+            ensemble_pred_rew1 = ensemble_pred_rew1 / (ensemble_pred_rew1.std((1, 2), keepdim=True) + 1e-8)
+            ensemble_pred_rew2 = ensemble_pred_rew2 / (ensemble_pred_rew2.std((1, 2), keepdim=True) + 1e-8)
+            
+        # convert to float64 to avoid infs
+        ensemble_pred_rew1 = ensemble_pred_rew1.to(dtype=torch.float64)
+        ensemble_pred_rew2 = ensemble_pred_rew2.to(dtype=torch.float64)
+        
+        ensemble_pred_rew1 = ensemble_pred_rew1.sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
+        ensemble_pred_rew2 = ensemble_pred_rew2.sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
         
         # predicted reward
         ensemble_pred_rewsum = ensemble_pred_rew1 + ensemble_pred_rew2
         label_preds = ensemble_pred_rew1 / ensemble_pred_rewsum # for normalization it is not necessary cuz everything is > 0
         
         # ground truth label from preference dataset
-        label_gt = preference_batch["label"].tile(self.model.num_ensemble, 1) # (num_ensemble,)
+        label_gt = preference_batch["label"].tile(self.model.num_ensemble, 1) # (num_ensemble, batch_size)
         loss = F.binary_cross_entropy(label_preds, label_gt)
         return loss
 
