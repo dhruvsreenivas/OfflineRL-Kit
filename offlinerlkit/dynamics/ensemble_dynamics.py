@@ -9,6 +9,7 @@ from offlinerlkit.dynamics import BaseDynamics
 from offlinerlkit.modules import EnsembleDynamicsModel, EnsembleDynamicsModelWithSeparateReward
 from offlinerlkit.utils.scaler import StandardScaler
 from offlinerlkit.utils.logger import Logger
+from offlinerlkit.utils.losses import ensemble_cross_entropy
 from offlinerlkit.buffer import PreferenceDataset, filter
 
 
@@ -151,8 +152,8 @@ class EnsembleDynamics(BaseDynamics):
         holdout_ratio: float = 0.2,
         logvar_loss_coef: float = 0.01,
         reward_loss_coef: float = 1.0,
-        normalize_reward_train: bool = False,
-        normalize_reward_val: bool = False
+        normalize_input_train: bool = False,
+        normalize_input_val: bool = False
     ) -> None:
         
         inputs, targets = self.format_samples_for_training(data)
@@ -197,15 +198,15 @@ class EnsembleDynamics(BaseDynamics):
                 batch_size,
                 logvar_loss_coef,
                 reward_loss_coef,
-                normalize_reward_train
+                normalize_input_train
             )
             # print(f'finished one epoch of training.')
-            new_holdout_losses, new_reward_losses, new_reward_accs = self.validate(holdout_inputs, holdout_targets, pref_val_dataset, normalize_reward_val)
+            new_holdout_losses, new_reward_losses, new_reward_accs = self.validate(holdout_inputs, holdout_targets, pref_val_dataset, normalize_input_val)
             # print(f'finished validation.')
             holdout_loss = (np.sort(new_holdout_losses)[:self.model.num_elites]).mean()
             if isinstance(self.model, EnsembleDynamicsModelWithSeparateReward):
                 holdout_reward_loss = (np.sort(new_reward_losses)[:self.model.num_elites]).mean()
-                holdout_reward_acc = np.mean(new_reward_accs)
+                holdout_reward_acc = (np.sort(new_reward_accs)[-self.model.num_elites:]).mean() # this is the highest accuracy sorted lol
             else:
                 holdout_reward_loss = 0.0 # baseline meaning you didn't actually train a separate reward predictor
                 holdout_reward_acc = 0.0
@@ -215,7 +216,7 @@ class EnsembleDynamics(BaseDynamics):
             logger.logkv("loss/dynamics_and_reward_holdout_loss", holdout_loss)
             logger.logkv("loss/reward_train_loss", train_reward_loss)
             logger.logkv("loss/reward_holdout_loss", holdout_reward_loss)
-            logger.logkv("loss/reward_acc_full_ensemble", holdout_reward_acc)
+            logger.logkv("loss/reward_acc", holdout_reward_acc)
             logger.set_timestep(epoch)
             logger.dumpkvs(exclude=["policy_training_progress"])
 
@@ -249,50 +250,48 @@ class EnsembleDynamics(BaseDynamics):
     def reward_loss(
         self,
         pref_batch: Dict[str, torch.Tensor],
-        normalize_reward: bool = False,
+        normalize_input: bool = False,
         reduction: str = 'sum'
     ) -> torch.Tensor:
-        obs_actions1 = torch.cat([pref_batch["observations1"], pref_batch["actions1"]], dim=-1).float()
+        obs_actions1 = torch.cat([pref_batch["observations1"], pref_batch["actions1"]], dim=-1).float() # (batch_size, seg_len, obs_dim + action_dim)
         obs_actions2 = torch.cat([pref_batch["observations2"], pref_batch["actions2"]], dim=-1).float()
         
+        # use scaler to normalize (s, a) segments, similar to what is done in regular dynamics model training
+        if normalize_input:
+            obs_actions1 = self.scaler.transform(obs_actions1)
+            obs_actions2 = self.scaler.transform(obs_actions2)
+        
+        # now get reward preds
         _, _, ensemble_pred_rew1 = self.model(obs_actions1) # (n_ensemble, batch_size, seg_len, 1)
         _, _, ensemble_pred_rew2 = self.model(obs_actions2)
         
-        # normalize rewards before getting label (only std, as in OpenAI paper)
-        if normalize_reward:
-            ensemble_pred_rew1 = ensemble_pred_rew1 / (ensemble_pred_rew1.std((1, 2), keepdim=True) + 1e-8)
-            ensemble_pred_rew2 = ensemble_pred_rew2 / (ensemble_pred_rew2.std((1, 2), keepdim=True) + 1e-8)
+        ensemble_pred_rew1 = ensemble_pred_rew1.sum(2).squeeze() # (n_ensemble, batch_size), sum(\hat{r}(\tau1)) -> logits
+        ensemble_pred_rew2 = ensemble_pred_rew2.sum(2).squeeze() # (n_ensemble, batch_size), sum(\hat{r}(\tau2)) -> logits
         
-        # convert to float64 to avoid infs
-        ensemble_pred_rew1 = ensemble_pred_rew1.to(dtype=torch.float64)
-        ensemble_pred_rew2 = ensemble_pred_rew2.to(dtype=torch.float64)
-        
-        ensemble_pred_rew1 = ensemble_pred_rew1.sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
-        ensemble_pred_rew2 = ensemble_pred_rew2.sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
-        assert (ensemble_pred_rew1 >= 0).all()
-        assert (ensemble_pred_rew2 >= 0).all()
-        assert not torch.isinf(ensemble_pred_rew1).any()
-        assert not torch.isinf(ensemble_pred_rew2).any()
-        
-        # predicted probability of preference reward
-        ensemble_pred_rewsum = ensemble_pred_rew1 + ensemble_pred_rew2
-        assert (ensemble_pred_rewsum >= ensemble_pred_rew1).all()
-        label_preds = ensemble_pred_rew1 / ensemble_pred_rewsum # for normalization it is not necessary cuz everything is > 0
+        # get stacked logits before throwing to cross entropy loss
+        ensemble_pred_rew = torch.stack([ensemble_pred_rew1, ensemble_pred_rew2], dim=-1) # (n_ensemble, batch_size, 2)
         
         # ground truth label from preference dataset
-        label_gt = pref_batch["label"].tile(self.model.num_ensemble, 1).to(dtype=torch.float64) # (num_ensemble, batch_size)
+        label_gt = pref_batch["label"] # (batch_size)
         
-        reward_loss = F.binary_cross_entropy(label_preds, label_gt, reduction=reduction)
+        reward_loss = ensemble_cross_entropy(ensemble_pred_rew, label_gt, reduction=reduction) # done in OPRL paper to a degree, just need to make sure this is right batching wise
         return reward_loss
     
     @torch.no_grad()
     def reward_acc(
         self,
         pref_batch: Dict[str, torch.Tensor],
-        normalize_reward: bool = False
+        normalize_reward: bool = False,
+        reduction: str = 'mean'
     ) -> torch.Tensor:
+        self.model.eval()
+        
         obs_actions1 = torch.cat([pref_batch["observations1"], pref_batch["actions1"]], dim=-1).float()
         obs_actions2 = torch.cat([pref_batch["observations2"], pref_batch["actions2"]], dim=-1).float()
+        
+        # normalize inputs via scaler
+        obs_actions1 = self.scaler.transform(obs_actions1)
+        obs_actions2 = self.scaler.transform(obs_actions2)
         
         _, _, ensemble_pred_rew1 = self.model(obs_actions1) # (n_ensemble, batch_size, seg_len, 1)
         _, _, ensemble_pred_rew2 = self.model(obs_actions2)
@@ -302,26 +301,21 @@ class EnsembleDynamics(BaseDynamics):
             ensemble_pred_rew1 = ensemble_pred_rew1 / (ensemble_pred_rew1.std((1, 2), keepdim=True) + 1e-8)
             ensemble_pred_rew2 = ensemble_pred_rew2 / (ensemble_pred_rew2.std((1, 2), keepdim=True) + 1e-8)
         
-        # convert to float64 to avoid infs
-        ensemble_pred_rew1 = ensemble_pred_rew1.to(dtype=torch.float64)
-        ensemble_pred_rew2 = ensemble_pred_rew2.to(dtype=torch.float64)
+        ensemble_pred_rew1 = ensemble_pred_rew1.sum(2).squeeze() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
+        ensemble_pred_rew2 = ensemble_pred_rew2.sum(2).squeeze() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
         
-        ensemble_pred_rew1 = ensemble_pred_rew1.sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
-        ensemble_pred_rew2 = ensemble_pred_rew2.sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
-        assert (ensemble_pred_rew1 >= 0).all()
-        assert (ensemble_pred_rew2 >= 0).all()
-        assert not torch.isinf(ensemble_pred_rew1).any()
-        assert not torch.isinf(ensemble_pred_rew2).any()
-        
-        # predicted probability of preference reward
-        ensemble_pred_rewsum = ensemble_pred_rew1 + ensemble_pred_rew2
-        assert (ensemble_pred_rewsum >= ensemble_pred_rew1).all()
-        label_preds = ensemble_pred_rew1 / ensemble_pred_rewsum # for normalization it is not necessary cuz everything is > 0
+        # get stacked logits before checking argmax
+        ensemble_pred_rew = torch.stack([ensemble_pred_rew1, ensemble_pred_rew2], dim=-1) # (n_ensemble, batch_size, 2)
+        reward_preds = torch.argmax(ensemble_pred_rew, dim=-1) # (n_ensemble, batch_size)
         
         # ground truth label from preference dataset
-        label_gt = pref_batch["label"].tile(self.model.num_ensemble, 1).to(dtype=torch.float64) # (num_ensemble, batch_size)
-        reward_pred_labels = (label_preds > 0.5).float()
-        reward_acc = (reward_pred_labels == label_gt).float().mean()
+        label_gt = pref_batch["label"].tile(self.model.num_ensemble, 1) # (num_ensemble, batch_size)
+        reward_acc = (reward_preds == label_gt).float()
+        
+        if reduction == 'mean':
+            reward_acc = reward_acc.mean()
+        elif reduction == 'sum':
+            reward_acc = reward_acc.sum()
         return reward_acc
     
     def learn(
@@ -405,16 +399,16 @@ class EnsembleDynamics(BaseDynamics):
                 reward_acc = 0.0
                 for _ in range(len(preference_dataset) // inputs.shape[0]):
                     batch = preference_dataset.sample(inputs.shape[0])
-                    reward_loss += self.reward_loss(batch, normalize_reward=normalize_reward, reduction='none').sum(-1) # (n_ensemble,)
+                    reward_loss += self.reward_loss(batch, normalize_reward=normalize_reward, reduction='none').mean(-1) # (n_ensemble,)
                     
                     # compute accuracy and add to it
-                    reward_acc += self.reward_acc(batch, normalize_reward=normalize_reward)
+                    reward_acc += self.reward_acc(batch, normalize_reward=normalize_reward, reduction='none').mean(-1) # should also be (n_ensemble,)
                 
                 reward_loss /= inputs.shape[0]
                 reward_acc /= inputs.shape[0]
                 loss = loss + reward_loss
                 reward_losses = list(reward_loss.cpu().numpy())
-                reward_accs = reward_acc.cpu().numpy()
+                reward_accs = list(reward_acc.cpu().numpy())
         
         # print(f"validation loss shape: {loss.size()}")
         val_loss = list(loss.cpu().numpy())

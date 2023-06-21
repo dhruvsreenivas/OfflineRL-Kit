@@ -46,8 +46,8 @@ class EnsembleLinear(nn.Module):
             # (n_ensemble, batch_size, dim)
             x = x + bias
         else:
-            # (num_ensemble, batch_size, segment_length, dim)
-            bias = bias.unsqueeze(2) # (n_ensemble, 1, 1, output_dim)
+            # (num_ensemble, batch_size, segment_length, dim) -> unsqueeze to segment length because we want the same bias across the segment length
+            bias = bias.unsqueeze(2) # (n_ensemble, 1, 1, output_dim) -- autotiling will take place on the 1st and 2nd dimension I think
             x = x + bias
 
         return x

@@ -26,11 +26,23 @@ class StandardScaler(object):
         """Transforms the input matrix data using the parameters of this scaler.
 
         Arguments:
-        data (np.array): A numpy array containing the points to be transformed.
+        data (np.array): A numpy array or torch tensor containing the points to be transformed.
 
         Returns: (np.array) The transformed dataset.
         """
-        return (data - self.mu) / self.std
+        if isinstance(data, np.ndarray):
+            return (data - self.mu) / self.std
+        else:
+            assert isinstance(data, torch.Tensor)
+            mu = torch.from_numpy(self.mu).to(data.device)
+            std = torch.from_numpy(self.std).to(data.device)
+            
+            if data.dim() == 3:
+                # (batch_size, seg_len, dim) -- mu/std is of shape (1, dim)
+                mu = mu.unsqueeze(1)
+                std = std.unsqueeze(1)
+            
+            return (data - mu) / std # same shape as data
 
     def inverse_transform(self, data):
         """Undoes the transformation performed by this scaler.

@@ -89,8 +89,8 @@ class EnsembleReward(BaseReward):
         
         # split into training and validation
         train_dataset, validation_dataset = filter(dataset, train_splits), filter(dataset, holdout_splits)
-        train_dataloader = DataLoader(train_dataset, batch_size=batch_size)
-        val_dataloader = DataLoader(validation_dataset, batch_size=batch_size)
+        train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        val_dataloader = DataLoader(validation_dataset, batch_size=batch_size, shuffle=True)
         
         # now train
         epoch = 0
@@ -100,12 +100,14 @@ class EnsembleReward(BaseReward):
         while True:
             epoch += 1
             train_loss = self.learn(train_dataloader)
-            new_holdout_losses = self.validate(val_dataloader)
+            new_holdout_losses, new_val_accs = self.validate(val_dataloader)
             holdout_loss = (np.sort(new_holdout_losses)[:self.model.num_elites]).mean()
+            val_acc = (np.sort(new_val_accs)[-self.model.num_elites:]).mean()
             
             # log
             logger.logkv("loss/reward_train_loss", train_loss)
             logger.logkv("loss/reward_holdout_loss", holdout_loss)
+            logger.logkv("loss/reward_accuracy", val_acc)
             logger.set_timestep(epoch)
             logger.dumpkvs(exclude=["policy_training_progress"])
             
@@ -149,7 +151,7 @@ class EnsembleReward(BaseReward):
             # print(f"label shape: {label_preds.shape}")
             
             label_gt = batch["label"].tile(self.model.num_ensemble, 1) # (n_ensemble, batch_size), labels need to be the same for each ensemble (i.e. label_gt[i] == label_gt[j] for all i, j)
-            loss = F.binary_cross_entropy(label_preds, label_gt)
+            loss = F.cross_entropy(label_preds, label_gt)
         
             # training step
             self.optim.zero_grad()
@@ -167,6 +169,7 @@ class EnsembleReward(BaseReward):
     def validate(self, val_dataloader: DataLoader) -> List[float]:
         self.model.eval()
         total_loss = 0.0
+        total_acc = 0.0
 
         for batch in val_dataloader:
             ensemble_pred_rew1 = self.model(batch["observations1"], batch["actions1"]).sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
@@ -179,11 +182,16 @@ class EnsembleReward(BaseReward):
             loss = F.binary_cross_entropy(label_preds, label_gt, reduction='none').mean(-1) # (n_ensemble)
             total_loss += loss
             
+            pref_preds = (label_preds > 0.5).float()
+            acc = (pref_preds == label_gt).float().mean(-1)
+            total_acc += acc
+            
             # delete batch to save memory?
             del batch
         
         val_loss = list(total_loss.cpu().numpy())
-        return val_loss
+        val_acc = list(total_acc.cpu().numpy())
+        return val_loss, val_acc
     
     def select_elites(self, metrics: List) -> List[int]:
         pairs = [(metric, index) for metric, index in zip(metrics, range(len(metrics)))]

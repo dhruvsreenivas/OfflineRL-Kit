@@ -233,48 +233,27 @@ def train(args=get_args()):
     
     # create policy
     policy_scaler = StandardScaler(mu=obs_mean, std=obs_std)
-    if args.train_w_reward_learning:
-        policy = RAMBORewardLearningPolicy(
-            dynamics,
-            reward,
-            actor,
-            critic1,
-            critic2,
-            actor_optim, 
-            critic1_optim, 
-            critic2_optim, 
-            dynamics_adv_optim,
-            reward_optim,
-            tau=args.tau, 
-            gamma=args.gamma, 
-            alpha=alpha, 
-            adv_weight=args.adv_weight, 
-            adv_rollout_length=args.rollout_length, 
-            adv_rollout_batch_size=args.adv_batch_size,
-            include_ent_in_adv=args.include_ent_in_adv,
-            scaler=policy_scaler,
-            device=args.device
-        ).to(args.device)
-    else:
-        policy = RAMBOPolicy(
-            dynamics, 
-            actor, 
-            critic1, 
-            critic2, 
-            actor_optim, 
-            critic1_optim, 
-            critic2_optim, 
-            dynamics_adv_optim,
-            tau=args.tau, 
-            gamma=args.gamma, 
-            alpha=alpha, 
-            adv_weight=args.adv_weight, 
-            adv_rollout_length=args.rollout_length, 
-            adv_rollout_batch_size=args.adv_batch_size,
-            include_ent_in_adv=args.include_ent_in_adv,
-            scaler=policy_scaler,
-            device=args.device
-        ).to(args.device)
+    policy = RAMBORewardLearningPolicy(
+        dynamics,
+        reward,
+        actor,
+        critic1,
+        critic2,
+        actor_optim, 
+        critic1_optim, 
+        critic2_optim, 
+        dynamics_adv_optim,
+        reward_optim,
+        tau=args.tau, 
+        gamma=args.gamma, 
+        alpha=alpha, 
+        adv_weight=args.adv_weight, 
+        adv_rollout_length=args.rollout_length, 
+        adv_rollout_batch_size=args.adv_batch_size,
+        include_ent_in_adv=args.include_ent_in_adv,
+        scaler=policy_scaler,
+        device=args.device
+    ).to(args.device)
 
     # log
     log_dirs = make_log_dirs(args.task, args.algo_name, args.seed, vars(args))

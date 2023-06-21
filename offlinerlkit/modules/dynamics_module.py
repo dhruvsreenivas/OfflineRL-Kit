@@ -171,16 +171,19 @@ class EnsembleDynamicsModelWithSeparateReward(nn.Module):
             dropout_probs = [0.0] * len(hidden_dims)
 
         module_list = []
+        masks = [] # like in OPRL
         hidden_dims = [obs_dim+action_dim] + list(hidden_dims)
         if weight_decays is None:
             weight_decays = [0.0] * (len(hidden_dims) + 1)
         
         for in_dim, out_dim, weight_decay, dropout_prob in zip(hidden_dims[:-1], hidden_dims[1:], weight_decays[:-1], dropout_probs):
             module_list.append(EnsembleLinear(in_dim, out_dim, num_ensemble, weight_decay))
-            if dropout_prob:
-                module_list.append(nn.Dropout(p=dropout_prob))
+            
+            mask = (torch.rand(out_dim) > dropout_prob).float() / dropout_prob # if it's 0, then we don't dropout
+            masks.append(mask)
         
         self.backbones = nn.ModuleList(module_list)
+        self.masks = masks
 
         # gaussian parameters
         self.next_state_layer = EnsembleLinear(
@@ -220,8 +223,9 @@ class EnsembleDynamicsModelWithSeparateReward(nn.Module):
     def forward(self, obs_action: np.ndarray) -> Tuple[torch.Tensor, torch.Tensor]:
         obs_action = torch.as_tensor(obs_action, dtype=torch.float32).to(self.device)
         output = obs_action
-        for layer in self.backbones:
-            output = self.activation(layer(output))
+        for layer, mask in zip(self.backbones, self.masks):
+            mask = mask.to(output.device)
+            output = self.activation(layer(output)) * mask
             
         # next state stuff
         sp_mean, sp_logvar = torch.chunk(self.next_state_layer(output), 2, dim=-1)
@@ -238,23 +242,20 @@ class EnsembleDynamicsModelWithSeparateReward(nn.Module):
 
     def load_save(self) -> None:
         for layer in self.backbones:
-            if not isinstance(layer, nn.Dropout):
-                layer.load_save()
+            layer.load_save()
         self.next_state_layer.load_save()
         self.reward_layer.load_save()
 
     def update_save(self, indexes: List[int]) -> None:
         for layer in self.backbones:
-            if not isinstance(layer, nn.Dropout):
-                layer.update_save(indexes)
+            layer.update_save(indexes)
         self.next_state_layer.update_save(indexes)
         self.reward_layer.update_save(indexes)
     
     def get_decay_loss(self) -> torch.Tensor:
         decay_loss = 0
         for layer in self.backbones:
-            if not isinstance(layer, nn.Dropout):
-                decay_loss += layer.get_decay_loss()
+            decay_loss += layer.get_decay_loss()
         decay_loss += self.next_state_layer.get_decay_loss()
         decay_loss += self.reward_layer.get_decay_loss()
         return decay_loss

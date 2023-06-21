@@ -346,7 +346,7 @@ class TrajectoryBuffer:
         }
         return samples
         
-    def generate_trajectory_preference_dataset(self, name: str) -> None:
+    def generate_trajectory_preference_dataset(self, name: str, sample_label: bool = True) -> None:
         """Generates offline data of pairs of trajectories (tau_1, tau_2, label). Across all pairs of trajectories."""
         offline_dataset = []
         
@@ -395,7 +395,10 @@ class TrajectoryBuffer:
                 
                 reward_diff = torch.tensor(total_rew1 - total_rew2)
                 label_prob = torch.sigmoid(reward_diff)
-                label = torch.bernoulli(label_prob)
+                if sample_label:
+                    label = torch.bernoulli(label_prob)
+                else:
+                    label = torch.tensor(total_rew1 > total_rew2).float()
                 
                 # add to dataset
                 offline_dataset.append((tau1, tau2, label))
@@ -403,7 +406,7 @@ class TrajectoryBuffer:
         offline_dataset = PreferenceDataset(offline_dataset, self.device)
         
         # save dataset somewhere for future reference so we can load this as fixed later
-        torch.save(offline_dataset, f"~/OfflineRL-Kit/offline_data/{name}_trajectory_preference_dataset.pt")
+        torch.save(offline_dataset, f"~/OfflineRL-Kit/offline_data/{name}_trajectory_preference_dataset_{'deterministic' if not sample_label else ''}.pt")
         
         # set as class variable
         self.trajectory_preference_dataset = offline_dataset
@@ -443,14 +446,14 @@ class TrajectoryBuffer:
             if sample_label:
                 label = torch.bernoulli(diff) # this is the label -> 0 if 1 < 2, 1 if not
             else:
-                label = torch.as_tensor(int(rew1 > rew2))
+                label = torch.tensor(rew1 > rew2).float()
             
             datapoints.append((snip1, snip2, label))
         
         offline_dataset = PreferenceDataset(datapoints, self.device)
         
         # save dataset somewhere for future reference so we can load this as fixed later
-        torch.save(offline_dataset, f"/home/ds844/OfflineRL-Kit/offline_data/{name}_snippet_preference_dataset_seglen{self.segment_length}_{'deterministic' if sample_label else ''}.pt")
+        torch.save(offline_dataset, f"/home/ds844/OfflineRL-Kit/offline_data/{name}_snippet_preference_dataset_seglen{self.segment_length}_{'deterministic' if not sample_label else ''}.pt")
         
         # set as class variable
         self.snippet_preference_dataset = offline_dataset
@@ -458,3 +461,8 @@ class TrajectoryBuffer:
     def load_snippet_preference_dataset(self, path: str) -> None:
         dataset = torch.load(path, map_location=self.device)
         self.snippet_preference_dataset = dataset
+        
+        
+def create_training_data_oprl(dataset: Dict[str, np.ndarray]) -> PreferenceDataset:
+    """Create training data and save it like the OPRL paper does."""
+    pass

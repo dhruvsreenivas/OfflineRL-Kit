@@ -44,12 +44,16 @@ class EnsembleRewardModel(nn.Module):
             assert len(dropout_probs) == len(hidden_dims)
         else:
             dropout_probs = [0.0] * len(hidden_dims)
+        self.dropout_probs = dropout_probs
         
+        out_dims = []
         for in_dim, out_dim, weight_decay, dropout_prob in zip(dims[:-1], dims[1:], weight_decays[:-1], dropout_probs):
             module_list.append(EnsembleLinear(in_dim, out_dim, num_ensemble, weight_decay))
-            if dropout_prob:
-                module_list.append(nn.Dropout(p=dropout_prob))
+            out_dims.append(out_dim)
+        
+        self.out_dims = out_dims
         self.backbones = nn.ModuleList(module_list)
+        self.masks = None
         
         # this is binary classification trained with MLE, so 1 output for the positive logit (no dropout on final output)
         self.output_layer = EnsembleLinear(
@@ -67,37 +71,52 @@ class EnsembleRewardModel(nn.Module):
         )
         self.to(self.device)
         
-    def forward(self, obs: Union[np.ndarray, torch.Tensor], action: Union[np.ndarray, torch.Tensor]) -> torch.Tensor:
+    def forward(self, obs: Union[np.ndarray, torch.Tensor], action: Union[np.ndarray, torch.Tensor], masks: Optional[List[float]] = None, train: bool = True) -> torch.Tensor:
         # just assume action is given, we don't necessarily need it
         if isinstance(obs, np.ndarray):
             obs = torch.from_numpy(obs).to(self.device)
         if isinstance(action, np.ndarray):
             action = torch.from_numpy(action).to(self.device)
             
+        available_mask = masks is not None
+        if not available_mask:
+            masks = self.generate_masks()
+            
         output = torch.cat([obs, action], dim=-1) if self._with_action else obs
-        for layer in self.backbones:
+        for layer, mask in zip(self.backbones, self.masks):
             output = self.activation(layer(output))
+            if train:
+                output = output * mask
         
         output = self.output_layer(output) # logits
+        
+        if not available_mask:
+            return output, masks  
+
         return output
+    
+    def generate_masks(self) -> List[torch.Tensor]:
+        masks = []
+        for out_dim, dp in zip(self.out_dims, self.dropout_probs):
+            mask = (torch.rand(out_dim) < dp).float()
+            masks.append(mask)
+        
+        return masks
     
     def load_save(self) -> None:
         for layer in self.backbones:
-            if not isinstance(layer, nn.Dropout):
-                layer.load_save()
+            layer.load_save()
         self.output_layer.load_save()
 
     def update_save(self, indexes: List[int]) -> None:
         for layer in self.backbones:
-            if not isinstance(layer, nn.Dropout):
-                layer.update_save(indexes)
+            layer.update_save(indexes)
         self.output_layer.update_save(indexes)
     
     def get_decay_loss(self) -> torch.Tensor:
         decay_loss = 0
         for layer in self.backbones:
-            if not isinstance(layer, nn.Dropout):
-                decay_loss += layer.get_decay_loss()
+            decay_loss += layer.get_decay_loss()
         decay_loss += self.output_layer.get_decay_loss()
         return decay_loss
 

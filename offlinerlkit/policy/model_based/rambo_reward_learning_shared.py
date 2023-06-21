@@ -12,6 +12,7 @@ from offlinerlkit.utils.scaler import StandardScaler
 from offlinerlkit.policy import MOPOPolicy
 from offlinerlkit.dynamics import BaseDynamics
 from offlinerlkit.modules import EnsembleDynamicsModel, EnsembleDynamicsModelWithSeparateReward
+from offlinerlkit.utils.losses import ensemble_cross_entropy
 
 
 class RAMBORewardLearningSharedPolicy(MOPOPolicy):
@@ -61,8 +62,8 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         
         self._dynamics_reward_adv_optim = dynamics_reward_adv_optim
         self._reward_loss_coef = reward_loss_coef
-        self._normalize_reward_train = normalize_reward_train
-        self._normalize_reward_eval = normalize_reward_eval
+        self._normalize_input_train = normalize_reward_train
+        self._normalize_input_eval = normalize_reward_eval
         self._adv_weight = adv_weight
         self._adv_train_steps = adv_train_steps
         self._adv_rollout_batch_size = adv_rollout_batch_size
@@ -135,7 +136,7 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
                 # gather new batch of offline data and update the model
                 offline_batch = (observations, actions, sl_observations, sl_actions, sl_next_observations)
                 preference_batch = preference_buffer.sample(self._reward_batch_size)
-                next_observations, terminals, loss_info = self.dynamics_step_and_forward(offline_batch, preference_batch, self._normalize_reward_train)
+                next_observations, terminals, loss_info = self.dynamics_step_and_forward(offline_batch, preference_batch, self._normalize_input_train)
                 for _key in loss_info:
                     all_loss_info[_key] += loss_info[_key]
                 # nonterm_mask = (~terminals).flatten()
@@ -154,7 +155,7 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         self,
         offline_batch: Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
         preference_batch: Dict[str, torch.Tensor],
-        normalize_reward: bool
+        normalize_input: bool
     ):
         observations, actions, sl_observations, sl_actions, sl_next_observations = offline_batch
         obs_act = np.concatenate([observations, actions], axis=-1)
@@ -223,7 +224,7 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         
         # add reward loss here on preference batch to add to supervised loss
         if isinstance(self.dynamics.model, EnsembleDynamicsModelWithSeparateReward):
-            reward_loss = self.reward_loss(preference_batch, normalize_reward)
+            reward_loss = self.reward_loss(preference_batch, normalize_input)
             sl_loss = sl_loss + self._reward_loss_coef * reward_loss
         
         all_loss = self._adv_weight * adv_loss + sl_loss
@@ -242,36 +243,28 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
             "adv_reward_update/reward_bce_loss": reward_loss.cpu().item()
         }
         
-    def reward_loss(self, preference_batch: Dict[str, torch.Tensor], normalize_reward: bool) -> torch.Tensor:
+    def reward_loss(self, preference_batch: Dict[str, torch.Tensor], normalize_input: bool) -> torch.Tensor:
         obs_actions1 = torch.cat([preference_batch["observations1"], preference_batch["actions1"]], dim=-1)
         obs_actions2 = torch.cat([preference_batch["observations2"], preference_batch["actions2"]], dim=-1)
+        
+        if normalize_input:
+            obs_actions1 = self.dynamics.scaler.transform(obs_actions1)
+            obs_actions2 = self.dynamics.scaler.transform(obs_actions2)
         
         _, _, ensemble_pred_rew1 = self.dynamics.model(obs_actions1)
         _, _, ensemble_pred_rew2 = self.dynamics.model(obs_actions2)
         
-        if normalize_reward:
-            ensemble_pred_rew1 = ensemble_pred_rew1 / (ensemble_pred_rew1.std((1, 2), keepdim=True) + 1e-8)
-            ensemble_pred_rew2 = ensemble_pred_rew2 / (ensemble_pred_rew2.std((1, 2), keepdim=True) + 1e-8)
+        ensemble_pred_rew1 = ensemble_pred_rew1.sum(2).squeeze() # (n_ensemble, batch_size), sum(\hat{r}(\tau1)) -> logits
+        ensemble_pred_rew2 = ensemble_pred_rew2.sum(2).squeeze() # (n_ensemble, batch_size), sum(\hat{r}(\tau2)) -> logits
         
-        # convert to float64 to avoid infs
-        ensemble_pred_rew1 = ensemble_pred_rew1.to(dtype=torch.float64)
-        ensemble_pred_rew2 = ensemble_pred_rew2.to(dtype=torch.float64)
-        
-        ensemble_pred_rew1 = ensemble_pred_rew1.sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
-        ensemble_pred_rew2 = ensemble_pred_rew2.sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
-        assert (ensemble_pred_rew1 >= 0).all()
-        assert (ensemble_pred_rew2 >= 0).all()
-        assert not torch.isinf(ensemble_pred_rew1).any()
-        assert not torch.isinf(ensemble_pred_rew2).any()
-        
-        # predicted reward
-        ensemble_pred_rewsum = ensemble_pred_rew1 + ensemble_pred_rew2
-        label_preds = ensemble_pred_rew1 / ensemble_pred_rewsum # for normalization it is not necessary cuz everything is > 0
+        # get stacked logits before throwing to cross entropy loss
+        ensemble_pred_rew = torch.stack([ensemble_pred_rew1, ensemble_pred_rew2], dim=-1) # (n_ensemble, batch_size, 2)
         
         # ground truth label from preference dataset
-        label_gt = preference_batch["label"].tile(self.dynamics.model.num_ensemble, 1).to(dtype=torch.float64) # (num_ensemble,)
-        loss = F.binary_cross_entropy(label_preds, label_gt)
-        return loss
+        label_gt = preference_batch["label"] # (num_ensemble, batch_size)
+        
+        reward_loss = ensemble_cross_entropy(ensemble_pred_rew, label_gt) # done in OPRL paper to a degree, just need to make sure this is right batching wise
+        return reward_loss
 
     def rollout(
         self,
