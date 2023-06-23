@@ -151,8 +151,8 @@ class EnsembleReward(BaseReward):
             # get stacked logits before throwing to cross entropy loss
             ensemble_pred_rew = torch.cat([ensemble_pred_rew1, ensemble_pred_rew2], dim=-1) # (n_ensemble, batch_size, 2)
 
-            # ground truth label from preference dataset
-            label_gt = batch["label"].long() # (n_ensemble, batch_size)
+            # ground truth label from preference dataset, sum over ensemble
+            label_gt = (1.0 - batch["label"]).long() # (batch_size), 1 if rew1 > rew2 else 0 so have to reverse it, as model outputs 0 if rew1 > rew2 else 1
             reward_loss = ensemble_cross_entropy(ensemble_pred_rew, label_gt, reduction='sum') # done in OPRL paper
         
             # training step
@@ -175,18 +175,18 @@ class EnsembleReward(BaseReward):
         
         count = 0
         for batch in val_dataloader:
-            ensemble_pred_rew1, masks = self.model(batch["observations1"], batch["actions1"], train=False) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
-            ensemble_pred_rew2 = self.model(batch["observations2"], batch["actions2"], masks=masks, train=False) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
+            ensemble_pred_rew1, _ = self.model(batch["observations1"], batch["actions1"], train=False) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
+            ensemble_pred_rew2, _ = self.model(batch["observations2"], batch["actions2"], train=False) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
             
             ensemble_pred_rew1 = ensemble_pred_rew1.sum(2) # (n_ensemble, batch_size), sum(\hat{r}(\tau1)) -> logits
             ensemble_pred_rew2 = ensemble_pred_rew2.sum(2) # (n_ensemble, batch_size), sum(\hat{r}(\tau2)) -> logits
             
             # get stacked logits before throwing to cross entropy loss
             ensemble_pred_rew = torch.cat([ensemble_pred_rew1, ensemble_pred_rew2], dim=-1) # (n_ensemble, batch_size, 2)
-            lbl_preds = torch.argmax(ensemble_pred_rew, dim=-1)
+            lbl_preds = torch.argmax(ensemble_pred_rew, dim=-1) # returns 0 if the first trajectory is maximal, 1 if not
 
             # ground truth label from preference dataset
-            label_gt = batch["label"].long() # (batch_size)
+            label_gt = (1.0 - batch["label"]).long() # (batch_size) (1 if first trajectory is maximal else 0, so have to reverse)
             reward_loss = ensemble_cross_entropy(ensemble_pred_rew, label_gt, reduction='none') # (n_ensemble,)
             total_loss += reward_loss
             

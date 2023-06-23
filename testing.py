@@ -10,12 +10,13 @@ from offlinerlkit.utils.logger import Logger, make_log_dirs
 
 """Various testing utilities."""
 
+@torch.no_grad()
 def validate_reward_model(ensemble: EnsembleReward, dataset: PreferenceDataset) -> None:
     num_correct = 0
     for i in range(len(dataset)):
         dp = dataset[i]
         
-        # just look at first reward, like in OPRL
+        # just look at the first model like OPRL does
         r1 = ensemble.model(dp["observations1"], dp["actions1"], train=False)[0][0].sum()
         r2 = ensemble.model(dp["observations2"], dp["actions2"], train=False)[0][0].sum()
         lbl = dp["label"]
@@ -23,7 +24,7 @@ def validate_reward_model(ensemble: EnsembleReward, dataset: PreferenceDataset) 
         print('------------------------------------')
         print(f"predicted reward for first traj: {r1}")
         print(f"predicted reward for second traj: {r2}")
-        print(f"is first traj actually better than second traj: {'YES' if lbl == 1.0 else 'NO'}")
+        print(f"is first traj actually better than second traj: {'YES' if lbl.item() == 1.0 else 'NO'}")
         
         if (r1 > r2 and lbl.item() == 1.0) or (r1 < r2 and lbl.item() == 0.0):
             num_correct += 1
