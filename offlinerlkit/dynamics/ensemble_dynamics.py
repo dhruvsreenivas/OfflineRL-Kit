@@ -135,10 +135,8 @@ class EnsembleDynamics(BaseDynamics):
         obss = data["observations"]
         actions = data["actions"]
         next_obss = data["next_observations"]
-        rewards = data["rewards"]
-        delta_obss = next_obss - obss
         inputs = np.concatenate((obss, actions), axis=-1)
-        targets = np.concatenate((delta_obss, rewards), axis=-1)
+        targets = next_obss - obss # delta_obss
         return inputs, targets
 
     def train(

@@ -70,7 +70,7 @@ class EnsembleDynamicsModel(nn.Module):
             module_list.append(EnsembleLinear(in_dim, out_dim, num_ensemble, weight_decay))
             
             mask = (torch.rand(out_dim) > dropout_prob).float() / dropout_prob if dropout_prob > 0 else torch.ones(out_dim).float() # if it's 0, then we don't dropout
-            masks.append(mask)
+            masks.append(mask.to(self.device))
         
         self.backbones = nn.ModuleList(module_list)
         self.masks = masks
@@ -98,11 +98,14 @@ class EnsembleDynamicsModel(nn.Module):
 
         self.to(self.device)
 
-    def forward(self, obs_action: np.ndarray) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, obs_action: np.ndarray, masks=None, train: bool=True) -> Tuple[torch.Tensor, torch.Tensor]:
         obs_action = torch.as_tensor(obs_action, dtype=torch.float32).to(self.device)
         output = obs_action
-        for layer, mask in zip(self.backbones, self.masks):
-            output = self.activation(layer(output)) * mask
+        masks = masks if masks is not None else self.masks
+        for layer, mask in zip(self.backbones, masks):
+            output = self.activation(layer(output))
+            if train:
+                output = output * mask
         
         mean, logvar = torch.chunk(self.output_layer(output), 2, dim=-1)
         logvar = soft_clamp(logvar, self.min_logvar, self.max_logvar)
