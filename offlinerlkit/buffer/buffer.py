@@ -442,8 +442,8 @@ class TrajectoryBuffer:
             # get label based off of BTL model of reward
             rew1 = np.sum(snip1["rewards"])
             rew2 = np.sum(snip2["rewards"])
-            diff = torch.sigmoid(torch.tensor(rew1 - rew2))
             if sample_label:
+                diff = torch.sigmoid(torch.tensor(rew1 - rew2))
                 label = torch.bernoulli(diff) # this is the label -> 0 if 1 < 2, 1 if not
             else:
                 label = torch.tensor(rew1 > rew2).float()

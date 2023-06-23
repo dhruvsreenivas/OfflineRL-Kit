@@ -271,8 +271,8 @@ class EnsembleDynamics(BaseDynamics):
         # get stacked logits before throwing to cross entropy loss
         ensemble_pred_rew = torch.stack([ensemble_pred_rew1, ensemble_pred_rew2], dim=-1) # (n_ensemble, batch_size, 2)
         
-        # ground truth label from preference dataset
-        label_gt = pref_batch["label"].long() # (batch_size)
+        # ground truth label from preference dataset (have to reverse it as model predicts 0 if rew1 > rew2, while dataset has 1 if rew1 > rew2)
+        label_gt = (1.0 - pref_batch["label"]).long() # (batch_size)
         
         reward_loss = ensemble_cross_entropy(ensemble_pred_rew, label_gt, reduction=reduction) # done in OPRL paper
         return reward_loss
@@ -306,7 +306,7 @@ class EnsembleDynamics(BaseDynamics):
         reward_preds = torch.argmax(ensemble_pred_rew, dim=-1) # (n_ensemble, batch_size)
         
         # ground truth label from preference dataset
-        label_gt = pref_batch["label"].tile(self.model.num_ensemble, 1).long() # (num_ensemble, batch_size)
+        label_gt = (1.0 - pref_batch["label"]).tile(self.model.num_ensemble, 1).long() # (num_ensemble, batch_size)
         reward_acc = (reward_preds == label_gt).float()
         
         if reduction == 'mean':
