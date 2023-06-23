@@ -60,15 +60,20 @@ class EnsembleDynamicsModel(nn.Module):
             dropout_probs = [0.0] * len(hidden_dims)
 
         module_list = []
+        masks = []
+        
         hidden_dims = [obs_dim+action_dim] + list(hidden_dims)
         if weight_decays is None:
             weight_decays = [0.0] * (len(hidden_dims) + 1)
+        
         for in_dim, out_dim, weight_decay, dropout_prob in zip(hidden_dims[:-1], hidden_dims[1:], weight_decays[:-1], dropout_probs):
             module_list.append(EnsembleLinear(in_dim, out_dim, num_ensemble, weight_decay))
-            if dropout_prob:
-                module_list.append(nn.Dropout(p=dropout_prob))
+            
+            mask = (torch.rand(out_dim) > dropout_prob).float() / dropout_prob if dropout_prob > 0 else torch.ones(out_dim).float() # if it's 0, then we don't dropout
+            masks.append(mask)
         
         self.backbones = nn.ModuleList(module_list)
+        self.masks = masks
 
         self.output_layer = EnsembleLinear(
             hidden_dims[-1],
@@ -96,14 +101,8 @@ class EnsembleDynamicsModel(nn.Module):
     def forward(self, obs_action: np.ndarray) -> Tuple[torch.Tensor, torch.Tensor]:
         obs_action = torch.as_tensor(obs_action, dtype=torch.float32).to(self.device)
         output = obs_action
-        for layer in self.backbones:
-            output = layer(output)
-            if self.use_dropout:
-                # only do activation after dropout
-                if isinstance(layer, nn.Dropout):
-                    output = self.activation(output)
-            else:
-                output = self.activation(output)
+        for layer, mask in zip(self.backbones, self.masks):
+            output = self.activation(layer(output)) * mask
         
         mean, logvar = torch.chunk(self.output_layer(output), 2, dim=-1)
         logvar = soft_clamp(logvar, self.min_logvar, self.max_logvar)
@@ -169,21 +168,20 @@ class EnsembleDynamicsModelWithSeparateReward(nn.Module):
             assert len(dropout_probs) == len(hidden_dims) # not doing dropout on last layer
         else:
             dropout_probs = [0.0] * len(hidden_dims)
+        self.dropout_probs = dropout_probs
 
         module_list = []
-        masks = [] # like in OPRL
         hidden_dims = [obs_dim+action_dim] + list(hidden_dims)
         if weight_decays is None:
             weight_decays = [0.0] * (len(hidden_dims) + 1)
         
+        out_dims = []
         for in_dim, out_dim, weight_decay, dropout_prob in zip(hidden_dims[:-1], hidden_dims[1:], weight_decays[:-1], dropout_probs):
             module_list.append(EnsembleLinear(in_dim, out_dim, num_ensemble, weight_decay))
-            
-            mask = (torch.rand(out_dim) > dropout_prob).float() / dropout_prob # if it's 0, then we don't dropout
-            masks.append(mask)
+            out_dims.append(out_dim)
         
         self.backbones = nn.ModuleList(module_list)
-        self.masks = masks
+        self.out_dims = out_dims
 
         # gaussian parameters
         self.next_state_layer = EnsembleLinear(
@@ -220,12 +218,19 @@ class EnsembleDynamicsModelWithSeparateReward(nn.Module):
 
         self.to(self.device)
 
-    def forward(self, obs_action: np.ndarray) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, obs_action: np.ndarray, masks: Optional[List[torch.Tensor]] = None, train: bool = True) -> Tuple[torch.Tensor, torch.Tensor]:
         obs_action = torch.as_tensor(obs_action, dtype=torch.float32).to(self.device)
         output = obs_action
-        for layer, mask in zip(self.backbones, self.masks):
+        
+        available_mask = masks is not None
+        if not available_mask:
+            masks = self.generate_masks()
+        
+        for layer, mask in zip(self.backbones, masks):
             mask = mask.to(output.device)
-            output = self.activation(layer(output)) * mask
+            output = self.activation(layer(output))
+            if train:
+                output = output * mask
             
         # next state stuff
         sp_mean, sp_logvar = torch.chunk(self.next_state_layer(output), 2, dim=-1)
@@ -238,7 +243,15 @@ class EnsembleDynamicsModelWithSeparateReward(nn.Module):
             reward = F.relu(reward)
         
         sp_logvar = soft_clamp(sp_logvar, self.min_logvar, self.max_logvar)
-        return sp_mean, sp_logvar, reward
+        return sp_mean, sp_logvar, reward, masks
+    
+    def generate_masks(self) -> List[torch.Tensor]:
+        masks = []
+        for out_dim, dp in zip(self.out_dims, self.dropout_probs):
+            mask = (torch.rand(out_dim) > dp).float()
+            masks.append(mask)
+        
+        return masks
 
     def load_save(self) -> None:
         for layer in self.backbones:

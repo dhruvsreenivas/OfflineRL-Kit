@@ -463,6 +463,38 @@ class TrajectoryBuffer:
         self.snippet_preference_dataset = dataset
         
         
-def create_training_data_oprl(dataset: Dict[str, np.ndarray]) -> PreferenceDataset:
+def create_training_data_oprl(dataset: Dict[str, np.ndarray], num_trajs: int, steps: int = 0) -> Tuple[List, List, List]:
     """Create training data and save it like the OPRL paper does."""
-    pass
+    
+    # generate the training demonstrations
+    demonstrations = []
+    learning_returns = []
+    learning_rewards = []
+
+    for i in range(num_trajs):
+        # done = False
+        traj = []
+        gt_rewards = []
+        r = 0
+
+        acc_reward = 0
+        traj_length = 50
+
+        while True:
+            ob, r, done = dataset['observations'][steps], dataset['rewards'][steps], dataset['terminals'][steps]
+            traj.append(ob)
+            gt_rewards.append(r)
+            steps += 1
+            acc_reward += r
+            # no terminal states for maze
+            # if done:
+            if steps % traj_length == 0:
+                # print("checkpoint: {}, steps: {}, return: {}".format(checkpoint, steps,acc_reward))
+                # print("steps: {}, return: {}".format(steps,acc_reward))
+                break
+        
+        demonstrations.append(traj)
+        learning_returns.append(acc_reward)
+        learning_rewards.append(gt_rewards)
+
+    return demonstrations, learning_returns, learning_rewards

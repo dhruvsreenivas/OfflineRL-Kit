@@ -10,6 +10,7 @@ from offlinerlkit.rewards import BaseReward
 from offlinerlkit.utils.scaler import StandardScaler
 from offlinerlkit.utils.logger import Logger
 from offlinerlkit.buffer import PreferenceDataset, filter
+from offlinerlkit.utils.losses import ensemble_cross_entropy
 
 
 class EnsembleReward(BaseReward):
@@ -72,7 +73,6 @@ class EnsembleReward(BaseReward):
             
         return rewards
     
-    # TODO implement train, learn and validate functions
     def train(
         self,
         dataset: PreferenceDataset,
@@ -89,8 +89,8 @@ class EnsembleReward(BaseReward):
         
         # split into training and validation
         train_dataset, validation_dataset = filter(dataset, train_splits), filter(dataset, holdout_splits)
-        train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        val_dataloader = DataLoader(validation_dataset, batch_size=batch_size, shuffle=True)
+        train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+        val_dataloader = DataLoader(validation_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
         
         # now train
         epoch = 0
@@ -142,25 +142,27 @@ class EnsembleReward(BaseReward):
         self.model.train()
         losses = []
         for batch in dataloader:
-            ensemble_pred_rew1 = self.model(batch["observations1"], batch["actions1"]).sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
-            ensemble_pred_rew2 = self.model(batch["observations2"], batch["actions2"]).sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
-            # print(f"rew1, rew2 ensemble shapes: {ensemble_pred_rew1.shape, ensemble_pred_rew2.shape}")
+            ensemble_pred_rew1, masks = self.model(batch["observations1"], batch["actions1"], train=True) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
+            ensemble_pred_rew2 = self.model(batch["observations2"], batch["actions2"], masks=masks, train=True) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
             
-            ensemble_pred_rewsum = ensemble_pred_rew1 + ensemble_pred_rew2
-            label_preds = ensemble_pred_rew1 / ensemble_pred_rewsum # for normalization it is not necessary cuz everything is > 0
-            # print(f"label shape: {label_preds.shape}")
+            ensemble_pred_rew1 = ensemble_pred_rew1.sum(2) # (n_ensemble, batch_size, 1), sum(\hat{r}(\tau1)) -> logits
+            ensemble_pred_rew2 = ensemble_pred_rew2.sum(2) # (n_ensemble, batch_size, 1), sum(\hat{r}(\tau2)) -> logits
             
-            label_gt = batch["label"].tile(self.model.num_ensemble, 1) # (n_ensemble, batch_size), labels need to be the same for each ensemble (i.e. label_gt[i] == label_gt[j] for all i, j)
-            loss = F.cross_entropy(label_preds, label_gt)
+            # get stacked logits before throwing to cross entropy loss
+            ensemble_pred_rew = torch.cat([ensemble_pred_rew1, ensemble_pred_rew2], dim=-1) # (n_ensemble, batch_size, 2)
+
+            # ground truth label from preference dataset
+            label_gt = batch["label"].long() # (n_ensemble, batch_size)
+            reward_loss = ensemble_cross_entropy(ensemble_pred_rew, label_gt, reduction='sum') # done in OPRL paper
         
             # training step
             self.optim.zero_grad()
-            loss.backward()
+            reward_loss.backward()
             self.optim.step()
             
-            losses.append(loss.item())
+            losses.append(reward_loss.item())
             
-            # delete batch?
+            # delete batch to save memory?
             del batch
         
         return np.mean(losses)
@@ -170,24 +172,30 @@ class EnsembleReward(BaseReward):
         self.model.eval()
         total_loss = 0.0
         total_acc = 0.0
-
+        
+        count = 0
         for batch in val_dataloader:
-            ensemble_pred_rew1 = self.model(batch["observations1"], batch["actions1"]).sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
-            ensemble_pred_rew2 = self.model(batch["observations2"], batch["actions2"]).sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
+            ensemble_pred_rew1, masks = self.model(batch["observations1"], batch["actions1"], train=False) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
+            ensemble_pred_rew2 = self.model(batch["observations2"], batch["actions2"], masks=masks, train=False) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
             
-            ensemble_pred_rewsum = ensemble_pred_rew1 + ensemble_pred_rew2
-            label_preds = ensemble_pred_rew1 / ensemble_pred_rewsum # for normalization
+            ensemble_pred_rew1 = ensemble_pred_rew1.sum(2) # (n_ensemble, batch_size), sum(\hat{r}(\tau1)) -> logits
+            ensemble_pred_rew2 = ensemble_pred_rew2.sum(2) # (n_ensemble, batch_size), sum(\hat{r}(\tau2)) -> logits
             
-            label_gt = batch["label"].tile(self.model.num_ensemble, 1) # (n_ensemble, batch_size)
-            loss = F.binary_cross_entropy(label_preds, label_gt, reduction='none').mean(-1) # (n_ensemble)
-            total_loss += loss
+            # get stacked logits before throwing to cross entropy loss
+            ensemble_pred_rew = torch.cat([ensemble_pred_rew1, ensemble_pred_rew2], dim=-1) # (n_ensemble, batch_size, 2)
+            lbl_preds = torch.argmax(ensemble_pred_rew, dim=-1)
+
+            # ground truth label from preference dataset
+            label_gt = batch["label"].long() # (batch_size)
+            reward_loss = ensemble_cross_entropy(ensemble_pred_rew, label_gt, reduction='none') # (n_ensemble,)
+            total_loss += reward_loss
             
-            pref_preds = (label_preds > 0.5).float()
-            acc = (pref_preds == label_gt).float().mean(-1)
-            total_acc += acc
-            
-            # delete batch to save memory?
-            del batch
+            reward_acc = (lbl_preds == label_gt.tile(self.model.num_ensemble, 1)).float().mean(-1)
+            total_acc += reward_acc
+            count += 1
+        
+        total_loss = total_loss / count
+        total_acc = total_acc / count
         
         val_loss = list(total_loss.cpu().numpy())
         val_acc = list(total_acc.cpu().numpy())

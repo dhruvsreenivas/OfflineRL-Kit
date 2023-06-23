@@ -1,4 +1,5 @@
 import torch
+from torch.utils.data import DataLoader
 import numpy as np
 import random
 
@@ -8,6 +9,26 @@ from offlinerlkit.buffer import PreferenceDataset
 from offlinerlkit.utils.logger import Logger, make_log_dirs
 
 """Various testing utilities."""
+
+def validate_reward_model(ensemble: EnsembleReward, dataset: PreferenceDataset) -> None:
+    num_correct = 0
+    for i in range(len(dataset)):
+        dp = dataset[i]
+        
+        # just look at first reward, like in OPRL
+        r1 = ensemble.model(dp["observations1"], dp["actions1"], train=False)[0][0].sum()
+        r2 = ensemble.model(dp["observations2"], dp["actions2"], train=False)[0][0].sum()
+        lbl = dp["label"]
+        
+        print('------------------------------------')
+        print(f"predicted reward for first traj: {r1}")
+        print(f"predicted reward for second traj: {r2}")
+        print(f"is first traj actually better than second traj: {'YES' if lbl == 1.0 else 'NO'}")
+        
+        if (r1 > r2 and lbl.item() == 1.0) or (r1 < r2 and lbl.item() == 0.0):
+            num_correct += 1
+    
+    print(f"fraction of predictions which are correct: {num_correct / len(dataset)}")
 
 def test_normal_reward_learning(dataset: PreferenceDataset) -> None:
     """Tests whether we can do reward learning with a separate reward model."""
@@ -26,11 +47,11 @@ def test_normal_reward_learning(dataset: PreferenceDataset) -> None:
     # create model + optimizer
     model = EnsembleRewardModel(
         obs_dim, action_dim,
-        hidden_dims=[512, 256, 128, 64, 32],
+        hidden_dims=[200, 200, 200, 200],
         num_ensemble=7,
         with_action=True,
         weight_decays=None,
-        dropout_probs=[0.0, 0.0, 0.0, 0.0, 0.5]
+        dropout_probs=None
     )
     optimizer = torch.optim.Adam(
         model.parameters(),
@@ -60,7 +81,9 @@ def test_normal_reward_learning(dataset: PreferenceDataset) -> None:
         max_epochs=100,
         holdout_ratio=0.1
     )
+    return ensemble
     
 if __name__ == '__main__':
     dataset = torch.load('./offline_data/halfcheetah-random-v2_snippet_preference_dataset_seglen15_deterministic.pt')
-    test_normal_reward_learning(dataset)
+    ensemble = test_normal_reward_learning(dataset)
+    validate_reward_model(ensemble, dataset)

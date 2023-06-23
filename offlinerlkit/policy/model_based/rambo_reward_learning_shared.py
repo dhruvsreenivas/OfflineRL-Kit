@@ -36,7 +36,7 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         gamma: float = 0.99,
         alpha: Union[float, Tuple[float, torch.Tensor, torch.optim.Optimizer]] = 0.2,
         reward_loss_coef: float = 1.0,
-        normalize_reward_train: bool = False,
+        normalize_input_train: bool = False,
         normalize_reward_eval: bool = True,
         adv_weight: float = 0,
         adv_train_steps: int = 1000,
@@ -62,8 +62,8 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         
         self._dynamics_reward_adv_optim = dynamics_reward_adv_optim
         self._reward_loss_coef = reward_loss_coef
-        self._normalize_input_train = normalize_reward_train
-        self._normalize_input_eval = normalize_reward_eval
+        self._normalize_input_train = normalize_input_train
+        self._normalize_reward_eval = normalize_reward_eval
         self._adv_weight = adv_weight
         self._adv_train_steps = adv_train_steps
         self._adv_rollout_batch_size = adv_rollout_batch_size
@@ -261,9 +261,9 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         ensemble_pred_rew = torch.stack([ensemble_pred_rew1, ensemble_pred_rew2], dim=-1) # (n_ensemble, batch_size, 2)
         
         # ground truth label from preference dataset
-        label_gt = preference_batch["label"] # (num_ensemble, batch_size)
+        label_gt = preference_batch["label"].long() # (num_ensemble, batch_size)
         
-        reward_loss = ensemble_cross_entropy(ensemble_pred_rew, label_gt) # done in OPRL paper to a degree, just need to make sure this is right batching wise
+        reward_loss = ensemble_cross_entropy(ensemble_pred_rew, label_gt, reduction='sum') # done in OPRL paper
         return reward_loss
 
     def rollout(

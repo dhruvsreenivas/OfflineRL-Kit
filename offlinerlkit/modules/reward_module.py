@@ -47,13 +47,12 @@ class EnsembleRewardModel(nn.Module):
         self.dropout_probs = dropout_probs
         
         out_dims = []
-        for in_dim, out_dim, weight_decay, dropout_prob in zip(dims[:-1], dims[1:], weight_decays[:-1], dropout_probs):
+        for in_dim, out_dim, weight_decay in zip(dims[:-1], dims[1:], weight_decays[:-1]):
             module_list.append(EnsembleLinear(in_dim, out_dim, num_ensemble, weight_decay))
             out_dims.append(out_dim)
         
         self.out_dims = out_dims
         self.backbones = nn.ModuleList(module_list)
-        self.masks = None
         
         # this is binary classification trained with MLE, so 1 output for the positive logit (no dropout on final output)
         self.output_layer = EnsembleLinear(
@@ -83,7 +82,8 @@ class EnsembleRewardModel(nn.Module):
             masks = self.generate_masks()
             
         output = torch.cat([obs, action], dim=-1) if self._with_action else obs
-        for layer, mask in zip(self.backbones, self.masks):
+        for layer, mask in zip(self.backbones, masks):
+            mask = mask.to(self.device)
             output = self.activation(layer(output))
             if train:
                 output = output * mask
@@ -91,14 +91,14 @@ class EnsembleRewardModel(nn.Module):
         output = self.output_layer(output) # logits
         
         if not available_mask:
-            return output, masks  
+            return output, masks
 
         return output
     
     def generate_masks(self) -> List[torch.Tensor]:
         masks = []
         for out_dim, dp in zip(self.out_dims, self.dropout_probs):
-            mask = (torch.rand(out_dim) < dp).float()
+            mask = (torch.rand(out_dim) > dp).float()
             masks.append(mask)
         
         return masks
