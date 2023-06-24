@@ -65,6 +65,8 @@ def test_normal_reward_learning(dataset: PreferenceDataset) -> None:
         penalty_coef=0
     )
     
+    # validate_reward_model(ensemble, dataset)
+    
     # loop through like 100 epochs or whatever
     log_dirs = make_log_dirs('halfcheetah-random-v2', 'pure_reward_learning', 0, {})
     output_config = {

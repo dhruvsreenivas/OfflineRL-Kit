@@ -2,9 +2,9 @@ import os
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+from torch.utils.data import DataLoader
 
-from typing import Callable, List, Tuple, Dict, Optional
+from typing import Callable, List, Tuple, Dict, Optional, Iterator
 from offlinerlkit.dynamics import BaseDynamics
 from offlinerlkit.modules import EnsembleDynamicsModel, EnsembleDynamicsModelWithSeparateReward
 from offlinerlkit.utils.scaler import StandardScaler
@@ -52,7 +52,7 @@ class EnsembleDynamics(BaseDynamics):
             std = np.sqrt(np.exp(logvar)) # [n_ensemble, batch_size, (s' + r) dim]
         else:
             assert isinstance(self.model, EnsembleDynamicsModelWithSeparateReward), "model should have separate reward head!"
-            mean, logvar, reward, _ = self.model(obs_act, train=True) # is in training, have to do dropout
+            mean, logvar, reward, _ = self.model(obs_act, train=False) # no need to do dropout here, as model is just stepping in eval mode
             mean = mean.cpu().numpy()
             logvar = logvar.cpu().numpy()
             reward = reward.cpu().numpy()
@@ -152,8 +152,8 @@ class EnsembleDynamics(BaseDynamics):
         holdout_ratio: float = 0.2,
         logvar_loss_coef: float = 0.01,
         reward_loss_coef: float = 1.0,
-        normalize_input_train: bool = False,
-        normalize_input_val: bool = False
+        normalize_reward_input_train: bool = False,
+        normalize_reward_input_val: bool = False
     ) -> None:
         
         inputs, targets = self.format_samples_for_training(data)
@@ -171,9 +171,14 @@ class EnsembleDynamics(BaseDynamics):
             pref_train_splits, pref_val_splits = torch.utils.data.random_split(range(len(preference_dataset)), (pref_train_size, pref_holdout_size))
             pref_train_dataset = filter(preference_dataset, pref_train_splits.indices)
             pref_val_dataset = filter(preference_dataset, pref_val_splits.indices)
+            
+            # dataloaders (save train one as class variable to refresh later)
+            self.pref_train_dataloader = DataLoader(pref_train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+            pref_train_dataloader = iter(self.pref_train_dataloader)
+            pref_val_dataloader = DataLoader(pref_val_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
         else:
-            pref_train_dataset = None
-            pref_val_dataset = None
+            pref_train_dataloader = None
+            pref_val_dataloader = None
 
         self.scaler.fit(train_inputs)
         train_inputs = self.scaler.transform(train_inputs)
@@ -194,14 +199,14 @@ class EnsembleDynamics(BaseDynamics):
             train_loss, train_reward_loss = self.learn(
                 train_inputs[data_idxes], 
                 train_targets[data_idxes],
-                pref_train_dataset,
+                pref_train_dataloader,
                 batch_size,
                 logvar_loss_coef,
                 reward_loss_coef,
-                normalize_input_train
+                normalize_reward_input_train
             )
             
-            new_holdout_losses, new_reward_losses, new_reward_accs = self.validate(holdout_inputs, holdout_targets, pref_val_dataset, normalize_input_val)
+            new_holdout_losses, new_reward_losses, new_reward_accs = self.validate(holdout_inputs, holdout_targets, pref_val_dataloader, normalize_reward_input_val)
             holdout_loss = (np.sort(new_holdout_losses)[:self.model.num_elites]).mean()
             
             if isinstance(self.model, EnsembleDynamicsModelWithSeparateReward):
@@ -265,13 +270,13 @@ class EnsembleDynamics(BaseDynamics):
         
         # now get reward preds
         _, _, ensemble_pred_rew1, masks = self.model(obs_actions1) # (n_ensemble, batch_size, seg_len, 1)
-        _, _, ensemble_pred_rew2, _ = self.model(obs_actions2, masks=masks)
+        _, _, ensemble_pred_rew2 = self.model(obs_actions2, masks=masks)
         
-        ensemble_pred_rew1 = ensemble_pred_rew1.sum(2) # (n_ensemble, batch_size), sum(\hat{r}(\tau1)) -> logits
-        ensemble_pred_rew2 = ensemble_pred_rew2.sum(2) # (n_ensemble, batch_size), sum(\hat{r}(\tau2)) -> logits
+        ensemble_pred_rew1 = ensemble_pred_rew1.sum(2) # (n_ensemble, batch_size, 1), sum(\hat{r}(\tau1)) -> logits
+        ensemble_pred_rew2 = ensemble_pred_rew2.sum(2) # (n_ensemble, batch_size, 1), sum(\hat{r}(\tau2)) -> logits
         
         # get stacked logits before throwing to cross entropy loss
-        ensemble_pred_rew = torch.stack([ensemble_pred_rew1, ensemble_pred_rew2], dim=-1) # (n_ensemble, batch_size, 2)
+        ensemble_pred_rew = torch.cat([ensemble_pred_rew1, ensemble_pred_rew2], dim=-1) # (n_ensemble, batch_size, 2)
         
         # ground truth label from preference dataset (have to reverse it as model predicts 0 if rew1 > rew2, while dataset has 1 if rew1 > rew2)
         label_gt = (1.0 - pref_batch["label"]).long() # (batch_size)
@@ -300,11 +305,11 @@ class EnsembleDynamics(BaseDynamics):
         _, _, ensemble_pred_rew1, _ = self.model(obs_actions1, train=False) # (n_ensemble, batch_size, seg_len, 1)
         _, _, ensemble_pred_rew2, _ = self.model(obs_actions2, train=False)
         
-        ensemble_pred_rew1 = ensemble_pred_rew1.sum(2).squeeze() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
-        ensemble_pred_rew2 = ensemble_pred_rew2.sum(2).squeeze() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
+        ensemble_pred_rew1 = ensemble_pred_rew1.sum(2) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
+        ensemble_pred_rew2 = ensemble_pred_rew2.sum(2) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
         
         # get stacked logits before checking argmax
-        ensemble_pred_rew = torch.stack([ensemble_pred_rew1, ensemble_pred_rew2], dim=-1) # (n_ensemble, batch_size, 2)
+        ensemble_pred_rew = torch.cat([ensemble_pred_rew1, ensemble_pred_rew2], dim=-1) # (n_ensemble, batch_size, 2)
         reward_preds = torch.argmax(ensemble_pred_rew, dim=-1) # (n_ensemble, batch_size)
         
         # ground truth label from preference dataset
@@ -321,11 +326,11 @@ class EnsembleDynamics(BaseDynamics):
         self,
         inputs: np.ndarray,
         targets: np.ndarray,
-        pref_dataset: Optional[PreferenceDataset],
+        pref_dataloader: Optional[Iterator],
         batch_size: int = 256,
         logvar_loss_coef: float = 0.01,
         reward_loss_coef: float = 1.0,
-        normalize_input: bool = False
+        normalize_input_for_reward: bool = False
     ) -> float:
         self.model.train()
         train_size = inputs.shape[1]
@@ -353,10 +358,16 @@ class EnsembleDynamics(BaseDynamics):
             loss = loss + self.model.get_decay_loss()
             loss = loss + logvar_loss_coef * self.model.max_logvar.sum() - logvar_loss_coef * self.model.min_logvar.sum()
             
-            # get reward loss over preference batch
-            if pref_dataset is not None:
-                pref_batch = pref_dataset.sample(batch_size)
-                reward_loss = self.reward_loss(pref_batch, normalize_input)
+            # get reward loss over next preference batch
+            if pref_dataloader is not None:
+                try:
+                    pref_batch = next(pref_dataloader)
+                except StopIteration:
+                    # refresh and start again
+                    pref_dataloader = iter(self.pref_train_dataloader)
+                    pref_batch = next(pref_dataloader)
+                    
+                reward_loss = self.reward_loss(pref_batch, normalize_input_for_reward)
                 loss = loss + reward_loss_coef * reward_loss
                 reward_losses.append(reward_loss.item())
             
@@ -375,7 +386,7 @@ class EnsembleDynamics(BaseDynamics):
         self,
         inputs: np.ndarray,
         targets: np.ndarray,
-        preference_dataset: Optional[PreferenceDataset] = None,
+        preference_dataloader: Optional[DataLoader] = None,
         normalize_input: bool = False
     ) -> List[float]:
         self.model.eval()
@@ -392,14 +403,12 @@ class EnsembleDynamics(BaseDynamics):
             loss = ((mean - targets) ** 2).mean(dim=(1, 2))
             
             # implement reward loss on some number of preference batches (sampled)
-            if preference_dataset is not None:
+            if preference_dataloader is not None:
                 reward_loss = 0.0
                 reward_acc = 0.0
-                for _ in range(len(preference_dataset) // inputs.shape[0]):
-                    batch = preference_dataset.sample(inputs.shape[0])
+                for batch in preference_dataloader:
+                    # compute loss + accuracy and accumulate
                     reward_loss += self.reward_loss(batch, normalize_input=normalize_input, reduction='none') # (n_ensemble,)
-                    
-                    # compute accuracy and add to it
                     reward_acc += self.reward_acc(batch, normalize_input=normalize_input, reduction='none').mean(-1) # should also be (n_ensemble,)
                 
                 reward_loss /= inputs.shape[0]

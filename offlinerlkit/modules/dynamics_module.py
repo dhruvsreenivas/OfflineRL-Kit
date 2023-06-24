@@ -234,6 +234,7 @@ class EnsembleDynamicsModelWithSeparateReward(nn.Module):
             
         # next state stuff
         sp_mean, sp_logvar = torch.chunk(self.next_state_layer(output), 2, dim=-1)
+        sp_logvar = soft_clamp(sp_logvar, self.min_logvar, self.max_logvar)
         
         # reward stuff
         reward = self.reward_layer(output)
@@ -242,8 +243,9 @@ class EnsembleDynamicsModelWithSeparateReward(nn.Module):
         elif self.reward_final_activation == 'relu':
             reward = F.relu(reward)
         
-        sp_logvar = soft_clamp(sp_logvar, self.min_logvar, self.max_logvar)
-        return sp_mean, sp_logvar, reward, masks
+        if not available_mask:
+            return sp_mean, sp_logvar, reward, masks
+        return sp_mean, sp_logvar, reward
     
     def generate_masks(self) -> List[torch.Tensor]:
         masks = []

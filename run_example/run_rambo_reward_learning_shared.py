@@ -70,8 +70,8 @@ def get_args():
     parser.add_argument("--real-ratio", type=float, default=0.5)
     parser.add_argument("--load-dynamics-path", type=str, default=None)
     parser.add_argument("--max-grad-norm", type=float, default=None)
-    parser.add_argument("--normalize-input-train", action="store_true")
-    parser.add_argument("--normalize-input-eval", action="store_true")
+    parser.add_argument("--normalize-reward-input-train", action="store_true")
+    parser.add_argument("--normalize-reward-eval", action="store_true")
     parser.add_argument("--save-dynamics-model-after-train", action="store_true")
 
     parser.add_argument("--epoch", type=int, default=2000)
@@ -216,8 +216,8 @@ def train(args=get_args()):
         gamma=args.gamma, 
         alpha=alpha,
         reward_loss_coef=args.reward_loss_coef,
-        normalize_input_train=args.normalize_input_train,
-        normalize_reward_eval=args.normalize_input_eval,
+        normalize_reward_input_train=args.normalize_reward_input_train,
+        normalize_reward_eval=args.normalize_reward_eval,
         adv_weight=args.adv_weight,
         adv_rollout_length=args.rollout_length, 
         adv_rollout_batch_size=args.adv_batch_size,
@@ -274,8 +274,8 @@ def train(args=get_args()):
             logvar_loss_coef=0.001,
             reward_loss_coef=args.reward_loss_coef,
             max_epochs_since_update=10,
-            normalize_input_train=args.normalize_input_train,
-            normalize_input_val=args.normalize_input_eval
+            normalize_reward_input_train=args.normalize_reward_input_train,
+            normalize_reward_input_val=args.normalize_reward_input_train # do same normalization for train + eval
         )
         
         # if we should save dynamics model, we save
