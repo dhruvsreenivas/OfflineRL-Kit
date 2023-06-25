@@ -290,8 +290,7 @@ def train(args=get_args()):
         reward.train(
             pref_dataset,
             logger,
-            # max_epochs=100,
-            max_epochs=1,
+            max_epochs=100,
             holdout_ratio=0.1,
             max_epochs_since_update=5,
             batch_size=args.reward_batch_size
@@ -312,7 +311,6 @@ def train(args=get_args()):
             logger,
             holdout_ratio=0.1,
             logvar_loss_coef=0.001,
-            max_epochs=1,
             max_epochs_since_update=10
         )
 
