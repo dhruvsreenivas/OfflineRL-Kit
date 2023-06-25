@@ -36,7 +36,7 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         gamma: float = 0.99,
         alpha: Union[float, Tuple[float, torch.Tensor, torch.optim.Optimizer]] = 0.2,
         reward_loss_coef: float = 1.0,
-        normalize_input_train: bool = False,
+        normalize_reward_input_train: bool = False,
         normalize_reward_eval: bool = True,
         adv_weight: float = 0,
         adv_train_steps: int = 1000,
@@ -62,7 +62,7 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         
         self._dynamics_reward_adv_optim = dynamics_reward_adv_optim
         self._reward_loss_coef = reward_loss_coef
-        self._normalize_input_train = normalize_input_train
+        self._normalize_reward_input_train = normalize_reward_input_train
         self._normalize_reward_eval = normalize_reward_eval
         self._adv_weight = adv_weight
         self._adv_train_steps = adv_train_steps
@@ -133,10 +133,10 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
                 sl_observations, sl_actions, sl_next_observations = \
                     itemgetter("observations", "actions", "next_observations")(real_buffer.sample(self._adv_rollout_batch_size))
                     
-                # gather new batch of offline data and update the model
+                # gather new batch of offline data and update the model (here we sample from both offline dataset + preference dataset)
                 offline_batch = (observations, actions, sl_observations, sl_actions, sl_next_observations)
                 preference_batch = preference_buffer.sample(self._reward_batch_size)
-                next_observations, terminals, loss_info = self.dynamics_step_and_forward(offline_batch, preference_batch, self._normalize_input_train)
+                next_observations, terminals, loss_info = self.dynamics_step_and_forward(offline_batch, preference_batch, self._normalize_reward_input_train)
                 for _key in loss_info:
                     all_loss_info[_key] += loss_info[_key]
                 # nonterm_mask = (~terminals).flatten()
@@ -155,12 +155,12 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         self,
         offline_batch: Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
         preference_batch: Dict[str, torch.Tensor],
-        normalize_input: bool
+        normalize_reward_input: bool
     ):
         observations, actions, sl_observations, sl_actions, sl_next_observations = offline_batch
         obs_act = np.concatenate([observations, actions], axis=-1)
         obs_act = self.dynamics.scaler.transform(obs_act)
-        diff_mean, logvar, rewards = self.dynamics.model(obs_act) # here we have to assume dynamics.model is EnsembleDynamicsModelWithSeparateReward
+        diff_mean, logvar, rewards, _ = self.dynamics.model(obs_act) # here we have to assume dynamics.model is EnsembleDynamicsModelWithSeparateReward
         observations = torch.from_numpy(observations).to(diff_mean.device)
         actions = torch.from_numpy(actions).to(diff_mean.device)
         
@@ -213,7 +213,7 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         if isinstance(self.dynamics.model, EnsembleDynamicsModel):
             sl_mean, sl_logvar = self.dynamics.model(sl_input)
         else:
-            sl_mean, sl_logvar, _ = self.dynamics.model(sl_input)
+            sl_mean, sl_logvar, _, _ = self.dynamics.model(sl_input)
         
         sl_inv_var = torch.exp(-sl_logvar)
         sl_mse_loss_inv = (torch.pow(sl_mean - sl_target, 2) * sl_inv_var).mean(dim=(1, 2))
@@ -224,7 +224,7 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         
         # add reward loss here on preference batch to add to supervised loss
         if isinstance(self.dynamics.model, EnsembleDynamicsModelWithSeparateReward):
-            reward_loss = self.reward_loss(preference_batch, normalize_input)
+            reward_loss = self.reward_loss(preference_batch, normalize_reward_input)
             sl_loss = sl_loss + self._reward_loss_coef * reward_loss
         
         all_loss = self._adv_weight * adv_loss + sl_loss
@@ -251,8 +251,8 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
             obs_actions1 = self.dynamics.scaler.transform(obs_actions1)
             obs_actions2 = self.dynamics.scaler.transform(obs_actions2)
         
-        _, _, ensemble_pred_rew1 = self.dynamics.model(obs_actions1)
-        _, _, ensemble_pred_rew2 = self.dynamics.model(obs_actions2)
+        _, _, ensemble_pred_rew1, masks = self.dynamics.model(obs_actions1)
+        _, _, ensemble_pred_rew2 = self.dynamics.model(obs_actions2, masks=masks)
         
         ensemble_pred_rew1 = ensemble_pred_rew1.sum(2).squeeze() # (n_ensemble, batch_size), sum(\hat{r}(\tau1)) -> logits
         ensemble_pred_rew2 = ensemble_pred_rew2.sum(2).squeeze() # (n_ensemble, batch_size), sum(\hat{r}(\tau2)) -> logits
