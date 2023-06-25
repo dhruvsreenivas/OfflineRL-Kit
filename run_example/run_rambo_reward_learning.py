@@ -17,11 +17,10 @@ from offlinerlkit.dynamics import EnsembleDynamics
 from offlinerlkit.rewards import EnsembleReward
 from offlinerlkit.utils.scaler import StandardScaler
 from offlinerlkit.utils.termination_fns import get_termination_fn, obs_unnormalization
-from offlinerlkit.buffer import ReplayBuffer
+from offlinerlkit.buffer import ReplayBuffer, PreferenceDataset
 from offlinerlkit.utils.logger import Logger, make_log_dirs
 from offlinerlkit.policy_trainer import PrefMBPolicyTrainer
-from offlinerlkit.policy import RAMBOPolicy, RAMBORewardLearningPolicy
-
+from offlinerlkit.policy import RAMBORewardLearningPolicy
 
 """
 suggested hypers
@@ -86,7 +85,7 @@ def get_args():
     
     # reward learning args
     parser.add_argument("--reward-hidden-dims", type=int, nargs='*', default=[200, 200, 200, 200])
-    parser.add_argument("--reward-dropout-probs", type=float, nargs='*', default=[0.0, 0.0, 0.0, 0.5])
+    parser.add_argument("--reward-dropout-probs", type=float, nargs='*', default=[0.0, 0.0, 0.0, 0.0])
     parser.add_argument("--reward-weight-decay", type=float, nargs='*', default=[0.0, 0.0, 0.0, 0.0, 0.0])
     parser.add_argument("--reward-lr", type=float, default=3e-4)
     parser.add_argument("--n-reward_models", type=int, default=7)
@@ -96,11 +95,28 @@ def get_args():
     parser.add_argument("--load-reward-path", type=str, default=None)
     parser.add_argument("--use-reward-scaler", action="store_true")
     parser.add_argument("--reward-penalty-coef", type=float, default=1.0)
-    parser.add_argument("--reward_batch_size", type=int, default=100)
+    parser.add_argument("--reward_batch_size", type=int, default=256)
     parser.add_argument("--reward-uncertainty-mode", type=str, default="aleatoric")
     parser.add_argument("--reward-final-activation", type=str, default="none")
 
     return parser.parse_args()
+
+
+@torch.no_grad()
+def validate_reward_model(ensemble: EnsembleReward, dataset: PreferenceDataset) -> None:
+    num_correct = 0
+    for i in range(len(dataset)):
+        dp = dataset[i]
+        
+        # just look at the first model like OPRL does
+        r1 = ensemble.model(dp["observations1"], dp["actions1"], train=False)[0][0].sum()
+        r2 = ensemble.model(dp["observations2"], dp["actions2"], train=False)[0][0].sum()
+        lbl = dp["label"]
+        
+        if (r1 > r2 and lbl.item() == 1.0) or (r1 < r2 and lbl.item() == 0.0):
+            num_correct += 1
+    
+    print(f"****** fraction of predictions which are correct: {num_correct / len(dataset)} ******")
 
 
 def train(args=get_args()):
@@ -295,6 +311,8 @@ def train(args=get_args()):
             max_epochs_since_update=5,
             batch_size=args.reward_batch_size
         )
+    
+    validate_reward_model(reward, pref_dataset)
 
     # train RAMBO start (no need to relabel reward)
     if args.load_bc_path:
@@ -311,6 +329,7 @@ def train(args=get_args()):
             logger,
             holdout_ratio=0.1,
             logvar_loss_coef=0.001,
+            max_epochs=250,
             max_epochs_since_update=10
         )
 

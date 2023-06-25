@@ -12,6 +12,7 @@ from offlinerlkit.utils.scaler import StandardScaler
 from offlinerlkit.policy import MOPOPolicy
 from offlinerlkit.dynamics import BaseDynamics
 from offlinerlkit.rewards import BaseReward
+from offlinerlkit.utils.losses import ensemble_cross_entropy
 
 
 class RAMBORewardLearningPolicy(MOPOPolicy):
@@ -80,7 +81,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         sample_num = observations.shape[0]
         idxs = np.arange(sample_num)
 
-        logger.log("Pretraining policy")
+        logger.log("*** Pretraining policy ***")
         self.actor.train()
         for i_epoch in range(n_epoch):
             np.random.shuffle(idxs)
@@ -217,7 +218,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         sl_loss = sl_loss + self.dynamics.model.get_decay_loss()
         sl_loss = sl_loss + 0.001 * self.dynamics.model.max_logvar.sum() - 0.001 * self.dynamics.model.min_logvar.sum()
         
-        # add reward loss here on preference batch to add to supervised loss
+        # add reward loss here on preference batch to add to supervised loss (don't do normalized input because unnormalized actually works well)
         reward_loss = self.reward_loss(preference_batch)
         sl_loss = sl_loss + reward_loss
         
@@ -239,30 +240,34 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
             "adv_reward_update/reward_bce_loss": reward_loss.cpu().item()
         }
         
-    def reward_loss(self, preference_batch: Dict[str, torch.Tensor], normalize_reward: bool = True) -> torch.Tensor:
-        ensemble_pred_rew1, _ = self.reward.model(preference_batch["observations1"], preference_batch["actions1"])
-        ensemble_pred_rew2, _ = self.reward.model(preference_batch["observations2"], preference_batch["actions2"])
+    def reward_loss(self, preference_batch: Dict[str, torch.Tensor], normalize_input: bool = False) -> torch.Tensor:
+        obs_dim, action_dim = preference_batch["observations1"].size(-1), preference_batch["actions1"].size(-1)
+        obs1, actions1 = preference_batch["observations1"], preference_batch["actions1"]
+        obs2, actions2 = preference_batch["observations2"], preference_batch["actions2"]
         
-        # normalize if need be
-        if normalize_reward:
-            ensemble_pred_rew1 = ensemble_pred_rew1 / (ensemble_pred_rew1.std((1, 2), keepdim=True) + 1e-8)
-            ensemble_pred_rew2 = ensemble_pred_rew2 / (ensemble_pred_rew2.std((1, 2), keepdim=True) + 1e-8)
-            
-        # convert to float64 to avoid infs
-        ensemble_pred_rew1 = ensemble_pred_rew1.to(dtype=torch.float64)
-        ensemble_pred_rew2 = ensemble_pred_rew2.to(dtype=torch.float64)
+        # normalize concatenated input
+        if normalize_input:
+            obs_actions1 = torch.cat([preference_batch["observations1"], preference_batch["actions1"]], dim=-1)
+            obs_actions2 = torch.cat([preference_batch["observations2"], preference_batch["actions2"]], dim=-1)
+            obs_actions1 = self.dynamics.scaler.transform(obs_actions1)
+            obs_actions2 = self.dynamics.scaler.transform(obs_actions2)
+            obs1, actions1 = torch.split(obs_actions1, [obs_dim, action_dim], dim=-1)
+            obs2, actions2 = torch.split(obs_actions2, [obs_dim, action_dim], dim=-1)
         
-        ensemble_pred_rew1 = ensemble_pred_rew1.sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
-        ensemble_pred_rew2 = ensemble_pred_rew2.sum(2).squeeze().exp() # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
+        ensemble_pred_rew1, masks = self.reward.model(obs1, actions1, train=True)
+        ensemble_pred_rew2 = self.reward.model(obs2, actions2, masks=masks, train=True)
         
-        # predicted reward
-        ensemble_pred_rewsum = ensemble_pred_rew1 + ensemble_pred_rew2
-        label_preds = ensemble_pred_rew1 / ensemble_pred_rewsum # for normalization it is not necessary cuz everything is > 0
+        ensemble_pred_rew1 = ensemble_pred_rew1.sum(2) # (n_ensemble, batch_size, 1), sum(\hat{r}(\tau1)) -> logits
+        ensemble_pred_rew2 = ensemble_pred_rew2.sum(2) # (n_ensemble, batch_size, 1), sum(\hat{r}(\tau2)) -> logits
+        
+        # get stacked logits before throwing to cross entropy loss
+        ensemble_pred_rew = torch.cat([ensemble_pred_rew1, ensemble_pred_rew2], dim=-1) # (n_ensemble, batch_size, 2)
         
         # ground truth label from preference dataset
-        label_gt = preference_batch["label"].tile(self.reward.model.num_ensemble, 1) # (num_ensemble, batch_size)
-        loss = F.binary_cross_entropy(label_preds.double(), label_gt.double())
-        return loss
+        label_gt = preference_batch["label"].long() # (num_ensemble, batch_size)
+        
+        reward_loss = ensemble_cross_entropy(ensemble_pred_rew, label_gt, reduction='sum') # done in OPRL paper
+        return reward_loss
 
     def rollout(
         self,
@@ -281,7 +286,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
             next_observations, rewards, terminals, info = self.dynamics.step(observations, actions)
             if not rewards:
                 # non-shared case, calculate rewards separately
-                rewards, _ = self.reward.model(obs=observations, action=actions)
+                rewards, _ = self.reward.model(obs=observations, action=actions, train=False) # here should we do train or eval?
                 rewards = rewards.cpu().detach().numpy() # ensembled
                 num_models, batch_size, _ = rewards.shape
                 model_idxs = self.reward.model.random_elite_idxs(batch_size)
