@@ -93,7 +93,7 @@ def get_args():
     parser.add_argument("--reward-with-action", action="store_true")
     parser.add_argument("--segment-length", type=int, default=15)
     parser.add_argument("--load-reward-path", type=str, default=None)
-    parser.add_argument("--use-reward-scaler", action="store_true")
+    parser.add_argument("--no-reward-scaler", action="store_true")
     parser.add_argument("--reward-penalty-coef", type=float, default=1.0)
     parser.add_argument("--reward_batch_size", type=int, default=256)
     parser.add_argument("--reward-uncertainty-mode", type=str, default="aleatoric")
@@ -235,6 +235,7 @@ def train(args=get_args()):
         reward_model.parameters(),
         lr=args.reward_lr
     )
+    reward_scaler = StandardScaler() if not args.no_reward_scaler else None
     reward = EnsembleReward(
         reward_model,
         reward_optim,

@@ -91,7 +91,13 @@ class EnsembleReward(BaseReward):
         train_dataset, validation_dataset = filter(dataset, train_splits), filter(dataset, holdout_splits)
         train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
         val_dataloader = DataLoader(validation_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
-        
+
+        # fit scaler
+        if self.scaler is not None:
+            mu, std = train_dataset.statistics(1e-6)
+            self.scaler.mu = mu
+            self.scaler.std = std
+
         # now train
         epoch = 0
         cnt = 0
@@ -142,8 +148,19 @@ class EnsembleReward(BaseReward):
         self.model.train()
         losses = []
         for batch in dataloader:
-            ensemble_pred_rew1, masks = self.model(batch["observations1"], batch["actions1"], train=True) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
-            ensemble_pred_rew2 = self.model(batch["observations2"], batch["actions2"], masks=masks, train=True) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
+            if self.scaler is not None:
+                obs_act_1 = np.concatenate([batch["observations1"].cpu(), batch["actions1"].cpu()], axis=-1)
+                obs_act_1 = self.scaler.transform(obs_act_1)
+                obs1, act1 = np.split(obs_act_1, [batch["observations1"].shape[-1]], axis=-1)
+
+                obs_act_2 = np.concatenate([batch["observations2"].cpu(), batch["actions2"].cpu()], axis=-1)
+                obs_act_2 = self.scaler.transform(obs_act_2)
+                obs2, act2 = np.split(obs_act_2, [batch["observations2"].shape[-1]], axis=-1)
+            else:
+                obs1, act1, obs2, act2 = batch["observations1"], batch["actions1"], batch["observations2"], batch["actions2"]
+
+            ensemble_pred_rew1, masks = self.model(obs1, act1, train=True) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
+            ensemble_pred_rew2 = self.model(obs2, act2, masks=masks, train=True) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
             
             ensemble_pred_rew1 = ensemble_pred_rew1.sum(2) # (n_ensemble, batch_size, 1), sum(\hat{r}(\tau1)) -> logits
             ensemble_pred_rew2 = ensemble_pred_rew2.sum(2) # (n_ensemble, batch_size, 1), sum(\hat{r}(\tau2)) -> logits
@@ -175,8 +192,20 @@ class EnsembleReward(BaseReward):
         
         count = 0
         for batch in val_dataloader:
-            ensemble_pred_rew1, _ = self.model(batch["observations1"], batch["actions1"], train=False) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
-            ensemble_pred_rew2, _ = self.model(batch["observations2"], batch["actions2"], train=False) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
+            if self.scaler is not None:
+                obs_act_1 = np.concatenate([batch["observations1"].cpu(), batch["actions1"].cpu()], axis=-1)
+                obs_act_1 = self.scaler.transform(obs_act_1)
+                obs1, act1 = np.split(obs_act_1, [batch["observations1"].shape[-1]], axis=-1)
+
+                obs_act_2 = np.concatenate([batch["observations2"].cpu(), batch["actions2"].cpu()], axis=-1)
+                obs_act_2 = self.scaler.transform(obs_act_2)
+                obs2, act2 = np.split(obs_act_2, [batch["observations2"].shape[-1]], axis=-1)
+            else:
+                obs1, act1, obs2, act2 = batch["observations1"], batch["actions1"], batch["observations2"], batch["actions2"]
+
+
+            ensemble_pred_rew1, _ = self.model(obs1, act1, train=False) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
+            ensemble_pred_rew2, _ = self.model(obs2, act2, train=False) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
             
             ensemble_pred_rew1 = ensemble_pred_rew1.sum(2) # (n_ensemble, batch_size), sum(\hat{r}(\tau1)) -> logits
             ensemble_pred_rew2 = ensemble_pred_rew2.sum(2) # (n_ensemble, batch_size), sum(\hat{r}(\tau2)) -> logits
@@ -209,13 +238,9 @@ class EnsembleReward(BaseReward):
     
     def save(self, save_path: str) -> None:
         torch.save(self.model.state_dict(), os.path.join(save_path, "reward.pth"))
-        if self.scaler is not None:
-            self.scaler.save_scaler(save_path)
     
     def load(self, load_path: str) -> None:
         self.model.load_state_dict(torch.load(os.path.join(load_path, "reward.pth"), map_location=self.model.device))
-        if self.scaler is not None:
-            self.scaler.load_scaler(load_path)
 
     
     
