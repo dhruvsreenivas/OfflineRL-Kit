@@ -12,7 +12,7 @@ class BaseReward(object):
         self.model = model
         self.optim = optim
         
-    def step(
+    def get_reward(
         self,
         obs: np.ndarray,
         action: np.ndarray

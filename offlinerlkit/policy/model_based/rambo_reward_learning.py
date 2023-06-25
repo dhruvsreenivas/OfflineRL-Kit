@@ -176,7 +176,10 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         selected_indexes = self.dynamics.model.random_elite_idxs(batch_size)
         sample = ensemble_sample[selected_indexes, np.arange(batch_size)]
         next_observations = sample
-        rewards, _ = self.reward.model(observations, actions) # (n_ensemble, batch_size, 1) for the moment -- this is for adversarial update
+        ensemble_rewards, _ = self.reward.model(observations, actions) # (n_ensemble, batch_size, 1) for the moment -- this is for adversarial update
+        # also get the elite idxs for rewards
+        rewards = ensemble_rewards[selected_indexes, np.arange(batch_size)]
+        
         terminals = self.dynamics.terminal_fn(observations.detach().cpu().numpy(), actions.detach().cpu().numpy(), next_observations.detach().cpu().numpy())
 
         # compute logprob
@@ -286,11 +289,12 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
             next_observations, rewards, terminals, info = self.dynamics.step(observations, actions)
             if not rewards:
                 # non-shared case, calculate rewards separately
-                rewards, _ = self.reward.model(obs=observations, action=actions, train=False) # here should we do train or eval?
+                rewards, _ = self.reward.get_reward(obs=observations, action=actions)
                 rewards = rewards.cpu().detach().numpy() # ensembled
                 num_models, batch_size, _ = rewards.shape
                 model_idxs = self.reward.model.random_elite_idxs(batch_size)
                 rewards = rewards[model_idxs, np.arange(batch_size)] # select from one of the ensemble reward models
+            
             rollout_transitions["obss"].append(observations)
             rollout_transitions["next_obss"].append(next_observations)
             rollout_transitions["actions"].append(actions)

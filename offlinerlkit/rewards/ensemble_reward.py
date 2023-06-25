@@ -40,7 +40,7 @@ class EnsembleReward(BaseReward):
             obs_act = self.scaler.transform(obs_act)
             obs, action = np.split(obs_act, [obs.shape[-1]], axis=-1)
         
-        ensemble_rewards = self.model(obs, action)
+        ensemble_rewards, _ = self.model(obs, action, train=False)
         ensemble_rewards = ensemble_rewards.cpu().numpy()
         
         # choose one from the ensemble (elite set here for evaluation)

@@ -168,7 +168,6 @@ def train(args=get_args()):
     dataset_path = f"/home/{args.netid}/OfflineRL-Kit/offline_data/{args.task}_snippet_preference_dataset_seglen{args.segment_length}_deterministic.pt"
     pref_dataset = torch.load(dataset_path)
     pref_dataset.device = args.device
-    oa_mean, oa_std = pref_dataset.statistics()
     
     real_buffer = ReplayBuffer(
         buffer_size=len(dataset["observations"]),
@@ -236,11 +235,10 @@ def train(args=get_args()):
         reward_model.parameters(),
         lr=args.reward_lr
     )
-    reward_scaler = StandardScaler(mu=oa_mean, std=oa_std) if args.use_reward_scaler else None
     reward = EnsembleReward(
         reward_model,
         reward_optim,
-        reward_scaler,
+        None,
         args.reward_penalty_coef,
         args.reward_uncertainty_mode
     )
@@ -329,7 +327,6 @@ def train(args=get_args()):
             logger,
             holdout_ratio=0.1,
             logvar_loss_coef=0.001,
-            max_epochs=250,
             max_epochs_since_update=10
         )
 
