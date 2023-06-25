@@ -34,7 +34,7 @@ class EnsembleReward(BaseReward):
         obs: np.ndarray,
         action: np.ndarray
     ) -> np.ndarray:
-        # scale and split back
+        # concat, scale and split back
         if self.scaler is not None:
             obs_act = np.concatenate([obs, action], axis=-1)
             obs_act = self.scaler.transform(obs_act)

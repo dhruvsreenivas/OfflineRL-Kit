@@ -217,7 +217,33 @@ def train(args=get_args()):
         dynamics_scaler,
         termination_fn,
     )
-    
+
+    # log
+    log_dirs = make_log_dirs(args.task, args.algo_name, args.seed, vars(args))
+    # key: output file name, value: output handler type
+    output_config = {
+        "consoleout_backup": "stdout",
+        "policy_training_progress": "csv",
+        "dynamics_training_progress": "csv",
+        "reward_training_progress": "csv",
+        "tb": "tensorboard"
+    }
+    logger = Logger(log_dirs, output_config)
+    logger.log_hyperparameters(vars(args))
+
+    # train pure dynamics
+    if args.load_dynamics_path:
+        dynamics.load(args.load_dynamics_path)
+    else:
+        dynamics.train(
+            real_buffer.sample_all(),
+            None,
+            logger,
+            holdout_ratio=0.1,
+            logvar_loss_coef=0.001,
+            max_epochs_since_update=10
+        )
+        
     # create reward learner
     reward_model = EnsembleRewardModel(
         obs_dim=np.prod(args.obs_shape),
@@ -235,17 +261,16 @@ def train(args=get_args()):
         reward_model.parameters(),
         lr=args.reward_lr
     )
-    reward_scaler = StandardScaler() if not args.no_reward_scaler else None
     reward = EnsembleReward(
         reward_model,
         reward_optim,
-        None,
+        dynamics.scaler,
         args.reward_penalty_coef,
         args.reward_uncertainty_mode
     )
     if args.load_reward_path:
         reward.load(args.load_reward_path)
-    
+        
     # create policy
     policy_scaler = StandardScaler(mu=obs_mean, std=obs_std)
     policy = RAMBORewardLearningPolicy(
@@ -269,20 +294,14 @@ def train(args=get_args()):
         scaler=policy_scaler,
         device=args.device
     ).to(args.device)
-
-    # log
-    log_dirs = make_log_dirs(args.task, args.algo_name, args.seed, vars(args))
-    # key: output file name, value: output handler type
-    output_config = {
-        "consoleout_backup": "stdout",
-        "policy_training_progress": "csv",
-        "dynamics_training_progress": "csv",
-        "reward_training_progress": "csv",
-        "tb": "tensorboard"
-    }
-    logger = Logger(log_dirs, output_config)
-    logger.log_hyperparameters(vars(args))
-
+    
+    # pretrain policy
+    if args.load_bc_path:
+        policy.load(args.load_bc_path)
+        policy.to(args.device)
+    else:
+        policy.pretrain(real_buffer.sample_all(), args.bc_epoch, args.bc_batch_size, args.bc_lr, logger)
+    
     # create policy trainer (here we don't train reward later, we just relabel and assume it works?)
     policy_trainer = PrefMBPolicyTrainer(
         policy=policy,
@@ -300,7 +319,7 @@ def train(args=get_args()):
         eval_episodes=args.eval_episodes
     )
     
-    # first train reward model if needed
+    # train reward model if needed (using dynamics scaler!!!)
     if not args.load_reward_path:
         reward.train(
             pref_dataset,
@@ -312,24 +331,6 @@ def train(args=get_args()):
         )
     
     validate_reward_model(reward, pref_dataset)
-
-    # train RAMBO start (no need to relabel reward)
-    if args.load_bc_path:
-        policy.load(args.load_bc_path)
-        policy.to(args.device)
-    else:
-        policy.pretrain(real_buffer.sample_all(), args.bc_epoch, args.bc_batch_size, args.bc_lr, logger)
-    if args.load_dynamics_path:
-        dynamics.load(args.load_dynamics_path)
-    else:
-        dynamics.train(
-            real_buffer.sample_all(),
-            None,
-            logger,
-            holdout_ratio=0.1,
-            logvar_loss_coef=0.001,
-            max_epochs_since_update=10
-        )
 
     # train policy (either with reward model adversarially (our approach) or treating as GT (no reward))
     policy_trainer.train()
