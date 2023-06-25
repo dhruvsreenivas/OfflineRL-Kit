@@ -147,6 +147,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
                     break
         
         self.dynamics.model.eval()
+        self.reward.model.eval()
         return {_key: _value/steps for _key, _value in all_loss_info.items()}
 
     def dynamics_step_and_forward(
@@ -174,7 +175,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         selected_indexes = self.dynamics.model.random_elite_idxs(batch_size)
         sample = ensemble_sample[selected_indexes, np.arange(batch_size)]
         next_observations = sample
-        rewards = self.reward.model(observations, actions) # (n_ensemble, batch_size, 1) for the moment -- this is for adversarial update
+        rewards, _ = self.reward.model(observations, actions) # (n_ensemble, batch_size, 1) for the moment -- this is for adversarial update
         terminals = self.dynamics.terminal_fn(observations.detach().cpu().numpy(), actions.detach().cpu().numpy(), next_observations.detach().cpu().numpy())
 
         # compute logprob
@@ -238,9 +239,9 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
             "adv_reward_update/reward_bce_loss": reward_loss.cpu().item()
         }
         
-    def reward_loss(self, preference_batch: Dict[str, torch.Tensor], normalize_reward: bool) -> torch.Tensor:
-        ensemble_pred_rew1 = self.reward.model(preference_batch["observations1"], preference_batch["actions1"])
-        ensemble_pred_rew2 = self.reward.model(preference_batch["observations2"], preference_batch["actions2"])
+    def reward_loss(self, preference_batch: Dict[str, torch.Tensor], normalize_reward: bool = True) -> torch.Tensor:
+        ensemble_pred_rew1, _ = self.reward.model(preference_batch["observations1"], preference_batch["actions1"])
+        ensemble_pred_rew2, _ = self.reward.model(preference_batch["observations2"], preference_batch["actions2"])
         
         # normalize if need be
         if normalize_reward:
@@ -259,8 +260,8 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         label_preds = ensemble_pred_rew1 / ensemble_pred_rewsum # for normalization it is not necessary cuz everything is > 0
         
         # ground truth label from preference dataset
-        label_gt = preference_batch["label"].tile(self.model.num_ensemble, 1) # (num_ensemble, batch_size)
-        loss = F.binary_cross_entropy(label_preds, label_gt)
+        label_gt = preference_batch["label"].tile(self.reward.model.num_ensemble, 1) # (num_ensemble, batch_size)
+        loss = F.binary_cross_entropy(label_preds.double(), label_gt.double())
         return loss
 
     def rollout(
@@ -278,6 +279,13 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         for _ in range(rollout_length):
             actions = super().select_action(observations)
             next_observations, rewards, terminals, info = self.dynamics.step(observations, actions)
+            if not rewards:
+                # non-shared case, calculate rewards separately
+                rewards, _ = self.reward.model(obs=observations, action=actions)
+                rewards = rewards.cpu().detach().numpy() # ensembled
+                num_models, batch_size, _ = rewards.shape
+                model_idxs = self.reward.model.random_elite_idxs(batch_size)
+                rewards = rewards[model_idxs, np.arange(batch_size)] # select from one of the ensemble reward models
             rollout_transitions["obss"].append(observations)
             rollout_transitions["next_obss"].append(next_observations)
             rollout_transitions["actions"].append(actions)

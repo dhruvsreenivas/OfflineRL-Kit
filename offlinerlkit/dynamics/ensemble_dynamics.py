@@ -48,7 +48,10 @@ class EnsembleDynamics(BaseDynamics):
             mean, logvar = self.model(obs_act)
             mean = mean.cpu().numpy()
             logvar = logvar.cpu().numpy()
-            mean[..., :-1] += obs # next state
+            if self.model._with_reward:
+                mean[..., :-1] += obs # next state
+            else: 
+                mean += obs # next state
             std = np.sqrt(np.exp(logvar)) # [n_ensemble, batch_size, (s' + r) dim]
         else:
             assert isinstance(self.model, EnsembleDynamicsModelWithSeparateReward), "model should have separate reward head!"
@@ -66,10 +69,11 @@ class EnsembleDynamics(BaseDynamics):
         num_models, batch_size, _ = ensemble_samples.shape
         model_idxs = self.model.random_elite_idxs(batch_size)
         samples = ensemble_samples[model_idxs, np.arange(batch_size)]
+        reward = None
         if isinstance(self.model, EnsembleDynamicsModelWithSeparateReward):
             reward = reward[model_idxs, np.arange(batch_size)]
         
-        if isinstance(self.model, EnsembleDynamicsModel):
+        if isinstance(self.model, EnsembleDynamicsModel) and self.model._with_reward:
             next_obs = samples[..., :-1]
             reward = samples[..., -1:]
         else:
@@ -77,7 +81,8 @@ class EnsembleDynamics(BaseDynamics):
         
         terminal = self.terminal_fn(obs, action, next_obs)
         info = {}
-        info["raw_reward"] = reward
+        if reward:
+            info["raw_reward"] = reward 
 
         if self._penalty_coef:
             if self._uncertainty_mode == "aleatoric":
@@ -100,7 +105,7 @@ class EnsembleDynamics(BaseDynamics):
             
         # if we want to normalize, normalize to have zero mean and standard deviation 1 -- rewards have shape (num_elites, batch_size, 1)
         # see https://arxiv.org/pdf/1706.03741.pdf section 2.2.1 for this
-        if normalize_reward:
+        if reward and normalize_reward:
             # mean / standard deviation over batch only -- no need to do over ensemble
             reward = (reward - reward.mean(axis=1, keepdims=True)) / (reward.std(axis=1, keepdims=True) + 1e-8)
         
@@ -202,7 +207,8 @@ class EnsembleDynamics(BaseDynamics):
             new_holdout_losses, new_reward_losses, new_reward_accs = self.validate(holdout_inputs, holdout_targets, pref_val_dataset, normalize_input_val)
             holdout_loss = (np.sort(new_holdout_losses)[:self.model.num_elites]).mean()
             
-            if isinstance(self.model, EnsembleDynamicsModelWithSeparateReward):
+            is_separate_reward_layer = isinstance(self.model, EnsembleDynamicsModelWithSeparateReward)
+            if is_separate_reward_layer:
                 holdout_reward_loss = (np.sort(new_reward_losses)[:self.model.num_elites]).mean()
                 holdout_reward_acc = (np.sort(new_reward_accs)[-self.model.num_elites:]).mean() # this is the highest accuracy sorted lol
             else:
@@ -210,11 +216,15 @@ class EnsembleDynamics(BaseDynamics):
                 holdout_reward_acc = 0.0
             
             # log
-            logger.logkv("loss/dynamics_and_reward_train_loss", train_loss)
-            logger.logkv("loss/dynamics_and_reward_holdout_loss", holdout_loss)
-            logger.logkv("loss/reward_train_loss", train_reward_loss)
-            logger.logkv("loss/reward_holdout_loss", holdout_reward_loss)
-            logger.logkv("loss/reward_accuracy", holdout_reward_acc)
+            if is_separate_reward_layer: # s' and r are in separate model as in last layer of dynamics model
+                logger.logkv("loss/dynamics_and_reward_train_loss", train_loss)
+                logger.logkv("loss/dynamics_and_reward_holdout_loss", holdout_loss)
+                logger.logkv("loss/reward_train_loss", train_reward_loss)
+                logger.logkv("loss/reward_holdout_loss", holdout_reward_loss)
+                logger.logkv("loss/reward_accuracy", holdout_reward_acc)
+            else: # dynamics only training
+                logger.logkv("loss/dynamics_train_loss", train_loss)
+                logger.logkv("loss/dynamics_holdout_loss", holdout_loss)
             logger.set_timestep(epoch)
             logger.dumpkvs(exclude=["policy_training_progress"])
 

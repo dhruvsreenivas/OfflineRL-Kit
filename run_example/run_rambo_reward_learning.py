@@ -42,7 +42,7 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--netid", type=str, default="ds844")
     parser.add_argument("--algo-name", type=str, default="rambo_reward_learning")
-    parser.add_argument("--task", type=str, default="hopper-medium-expert-v2")
+    parser.add_argument("--task", type=str, default="halfcheetah-random-v2")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--actor-lr", type=float, default=1e-4)
     parser.add_argument("--critic-lr", type=float, default=3e-4)
@@ -149,7 +149,7 @@ def train(args=get_args()):
         alpha = args.alpha
 
     # create buffers
-    dataset_path = f"/home/{args.netid}/OfflineRL-Kit/offline_data/{args.task}_snippet_preference_dataset_seglen{args.segment_length}.pt"
+    dataset_path = f"/home/{args.netid}/OfflineRL-Kit/offline_data/{args.task}_snippet_preference_dataset_seglen{args.segment_length}_deterministic.pt"
     pref_dataset = torch.load(dataset_path)
     pref_dataset.device = args.device
     oa_mean, oa_std = pref_dataset.statistics()
@@ -290,7 +290,9 @@ def train(args=get_args()):
         reward.train(
             pref_dataset,
             logger,
-            max_epochs=1000,
+            # max_epochs=100,
+            max_epochs=1,
+            holdout_ratio=0.1,
             max_epochs_since_update=5,
             batch_size=args.reward_batch_size
         )
@@ -310,6 +312,7 @@ def train(args=get_args()):
             logger,
             holdout_ratio=0.1,
             logvar_loss_coef=0.001,
+            max_epochs=1,
             max_epochs_since_update=10
         )
 
