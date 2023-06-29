@@ -69,10 +69,13 @@ class EnsembleDynamics(BaseDynamics):
         num_models, batch_size, _ = ensemble_samples.shape
         model_idxs = self.model.random_elite_idxs(batch_size)
         samples = ensemble_samples[model_idxs, np.arange(batch_size)]
+        
+        # get reward
         reward = None
         if isinstance(self.model, EnsembleDynamicsModelWithSeparateReward):
             reward = reward[model_idxs, np.arange(batch_size)]
         
+        # process next obs and reward
         if isinstance(self.model, EnsembleDynamicsModel) and self.model._with_reward:
             next_obs = samples[..., :-1]
             reward = samples[..., -1:]

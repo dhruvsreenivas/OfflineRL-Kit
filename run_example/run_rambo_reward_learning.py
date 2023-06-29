@@ -69,7 +69,7 @@ def get_args():
     parser.add_argument("--model-retain-epochs", type=int, default=5)
     parser.add_argument("--real-ratio", type=float, default=0.5)
     parser.add_argument("--load-dynamics-path", type=str, default=None)
-    parser.add_argument("--train-w-reward-learning", action="store_true")
+    parser.add_argument("--max-dynamics-pretrain-epochs", type=int, default=500)
 
     parser.add_argument("--epoch", type=int, default=2000)
     parser.add_argument("--step-per-epoch", type=int, default=1000)
@@ -93,11 +93,12 @@ def get_args():
     parser.add_argument("--reward-with-action", action="store_true")
     parser.add_argument("--segment-length", type=int, default=15)
     parser.add_argument("--load-reward-path", type=str, default=None)
-    parser.add_argument("--no-reward-scaler", action="store_true")
-    parser.add_argument("--reward-penalty-coef", type=float, default=1.0)
+    parser.add_argument("--reward-penalty-coef", type=float, default=0.0)
     parser.add_argument("--reward_batch_size", type=int, default=256)
     parser.add_argument("--reward-uncertainty-mode", type=str, default="aleatoric")
     parser.add_argument("--reward-final-activation", type=str, default="none")
+    parser.add_argument("--adv-reward-coef", type=float, default=1.0)
+    parser.add_argument("--use-reward-scaler", action='store_true', help='whether to use dynamics scaler for reward learning or not')
 
     return parser.parse_args()
 
@@ -108,11 +109,14 @@ def validate_reward_model(ensemble: EnsembleReward, dataset: PreferenceDataset) 
     for i in range(len(dataset)):
         dp = dataset[i]
         
-        # just look at the first model like OPRL does
-        r1 = ensemble.model(dp["observations1"], dp["actions1"], train=False)[0][0].sum()
-        r2 = ensemble.model(dp["observations2"], dp["actions2"], train=False)[0][0].sum()
-        lbl = dp["label"]
+        # just look at the elite models
+        r1 = ensemble.get_reward(dp["observations1"].cpu().numpy(), dp["actions1"].cpu().numpy()).sum()
+        r2 = ensemble.get_reward(dp["observations2"].cpu().numpy(), dp["actions2"].cpu().numpy()).sum()
+        if np.isnan(r1).any() or np.isnan(r2).any():
+            print("Hit a NaN, breaking out...")
+            break
         
+        lbl = dp["label"]
         if (r1 > r2 and lbl.item() == 1.0) or (r1 < r2 and lbl.item() == 0.0):
             num_correct += 1
     
@@ -217,33 +221,7 @@ def train(args=get_args()):
         dynamics_scaler,
         termination_fn,
     )
-
-    # log
-    log_dirs = make_log_dirs(args.task, args.algo_name, args.seed, vars(args))
-    # key: output file name, value: output handler type
-    output_config = {
-        "consoleout_backup": "stdout",
-        "policy_training_progress": "csv",
-        "dynamics_training_progress": "csv",
-        "reward_training_progress": "csv",
-        "tb": "tensorboard"
-    }
-    logger = Logger(log_dirs, output_config)
-    logger.log_hyperparameters(vars(args))
-
-    # train pure dynamics
-    if args.load_dynamics_path:
-        dynamics.load(args.load_dynamics_path)
-    else:
-        dynamics.train(
-            real_buffer.sample_all(),
-            None,
-            logger,
-            holdout_ratio=0.1,
-            logvar_loss_coef=0.001,
-            max_epochs_since_update=10
-        )
-        
+    
     # create reward learner
     reward_model = EnsembleRewardModel(
         obs_dim=np.prod(args.obs_shape),
@@ -264,7 +242,7 @@ def train(args=get_args()):
     reward = EnsembleReward(
         reward_model,
         reward_optim,
-        dynamics.scaler,
+        dynamics.scaler if args.use_reward_scaler else None,
         args.reward_penalty_coef,
         args.reward_uncertainty_mode
     )
@@ -290,19 +268,26 @@ def train(args=get_args()):
         adv_weight=args.adv_weight, 
         adv_rollout_length=args.rollout_length, 
         adv_rollout_batch_size=args.adv_batch_size,
+        adv_reward_loss_coef=args.adv_reward_coef,
         include_ent_in_adv=args.include_ent_in_adv,
         scaler=policy_scaler,
         device=args.device
     ).to(args.device)
     
-    # pretrain policy
-    if args.load_bc_path:
-        policy.load(args.load_bc_path)
-        policy.to(args.device)
-    else:
-        policy.pretrain(real_buffer.sample_all(), args.bc_epoch, args.bc_batch_size, args.bc_lr, logger)
+    # log
+    log_dirs = make_log_dirs(args.task, args.algo_name, args.seed, vars(args))
+    # key: output file name, value: output handler type
+    output_config = {
+        "consoleout_backup": "stdout",
+        "policy_training_progress": "csv",
+        "dynamics_training_progress": "csv",
+        "reward_training_progress": "csv",
+        "tb": "tensorboard"
+    }
+    logger = Logger(log_dirs, output_config)
+    logger.log_hyperparameters(vars(args))
     
-    # create policy trainer (here we don't train reward later, we just relabel and assume it works?)
+    # create policy trainer
     policy_trainer = PrefMBPolicyTrainer(
         policy=policy,
         eval_env=env,
@@ -319,14 +304,35 @@ def train(args=get_args()):
         eval_episodes=args.eval_episodes
     )
     
+    # pretrain policy
+    if args.load_bc_path:
+        policy.load(args.load_bc_path)
+        policy.to(args.device)
+    else:
+        policy.pretrain(real_buffer.sample_all(), args.bc_epoch, args.bc_batch_size, args.bc_lr, logger)
+
+    # train pure dynamics
+    if args.load_dynamics_path:
+        dynamics.load(args.load_dynamics_path)
+    else:
+        dynamics.train(
+            real_buffer.sample_all(),
+            None,
+            logger,
+            holdout_ratio=0.1,
+            logvar_loss_coef=0.001,
+            max_epochs=args.max_dynamics_pretrain_epochs,
+            max_epochs_since_update=10
+        )
+        # sets dynamics scaler here, so have stats for reward
+    
     # train reward model if needed (using dynamics scaler!!!)
     if not args.load_reward_path:
         reward.train(
             pref_dataset,
             logger,
-            max_epochs=100,
             holdout_ratio=0.1,
-            max_epochs_since_update=5,
+            max_epochs_since_update=10,
             batch_size=args.reward_batch_size
         )
     

@@ -40,6 +40,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         adv_weight: float = 0,
         adv_train_steps: int = 1000,
         adv_rollout_batch_size: int = 256,
+        adv_reward_loss_coef: float = 1.0,
         reward_batch_size: int = 20,
         adv_rollout_length: int = 5,
         include_ent_in_adv: bool = False,
@@ -67,6 +68,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         self._adv_rollout_batch_size = adv_rollout_batch_size
         self._reward_batch_size = reward_batch_size
         self._adv_rollout_length = adv_rollout_length
+        self._adv_reward_loss_coef = adv_reward_loss_coef
         self._include_ent_in_adv = include_ent_in_adv
         self.scaler = scaler
         self.device = device
@@ -221,9 +223,9 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         sl_loss = sl_loss + self.dynamics.model.get_decay_loss()
         sl_loss = sl_loss + 0.001 * self.dynamics.model.max_logvar.sum() - 0.001 * self.dynamics.model.min_logvar.sum()
         
-        # add reward loss here on preference batch to add to supervised loss (don't do normalized input because unnormalized actually works well)
+        # add reward loss here on preference batch to add to supervised loss
         reward_loss = self.reward_loss(preference_batch)
-        sl_loss = sl_loss + reward_loss
+        sl_loss = sl_loss + self._adv_reward_loss_coef * reward_loss
         
         all_loss = self._adv_weight * adv_loss + sl_loss
         
@@ -267,7 +269,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         ensemble_pred_rew = torch.cat([ensemble_pred_rew1, ensemble_pred_rew2], dim=-1) # (n_ensemble, batch_size, 2)
         
         # ground truth label from preference dataset
-        label_gt = preference_batch["label"].long() # (num_ensemble, batch_size)
+        label_gt = (1.0 - preference_batch["label"]).long() # (num_ensemble, batch_size)
         
         reward_loss = ensemble_cross_entropy(ensemble_pred_rew, label_gt, reduction='sum') # done in OPRL paper
         return reward_loss
@@ -287,13 +289,9 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         for _ in range(rollout_length):
             actions = super().select_action(observations)
             next_observations, rewards, terminals, info = self.dynamics.step(observations, actions)
-            if not rewards:
+            if rewards is None:
                 # non-shared case, calculate rewards separately
-                rewards, _ = self.reward.get_reward(obs=observations, action=actions)
-                rewards = rewards.cpu().detach().numpy() # ensembled
-                num_models, batch_size, _ = rewards.shape
-                model_idxs = self.reward.model.random_elite_idxs(batch_size)
-                rewards = rewards[model_idxs, np.arange(batch_size)] # select from one of the ensemble reward models
+                rewards = self.reward.get_reward(obs=observations, action=actions) # keep training flag?
             
             rollout_transitions["obss"].append(observations)
             rollout_transitions["next_obss"].append(next_observations)

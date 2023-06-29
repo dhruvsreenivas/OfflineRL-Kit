@@ -40,17 +40,21 @@ class EnsembleReward(BaseReward):
             obs_act = self.scaler.transform(obs_act)
             obs, action = np.split(obs_act, [obs.shape[-1]], axis=-1)
         
+        obs = torch.from_numpy(obs).to(self.model.device)
+        action = torch.from_numpy(action).to(self.model.device)
         ensemble_rewards, _ = self.model(obs, action, train=False)
         ensemble_rewards = ensemble_rewards.cpu().numpy()
+        # print(f'ensemble reward shape: {ensemble_rewards.shape}') # (n_ensemble, seg_len, 1)
         
         # choose one from the ensemble (elite set here for evaluation)
         batch_size = ensemble_rewards.shape[1]
         model_idxs = self.model.random_elite_idxs(batch_size)
         rewards = ensemble_rewards[model_idxs, np.arange(batch_size)]
+        # print(f'reward shape: {rewards.shape}') # (seg_len, 1)
         
         info = {}
-        # uncertainty penalty
         if self._penalty_coef:
+            # uncertainty penalty -- TODO fix
             if self._uncertainty_mode == "aleatoric":
                 # reward logits of size (ensemble, batch_size, 1) -> find probs, compute std of categorical distribution?
                 probs = np.exp(ensemble_rewards)
@@ -148,19 +152,29 @@ class EnsembleReward(BaseReward):
         self.model.train()
         losses = []
         for batch in dataloader:
+            assert isinstance(batch["observations1"], torch.Tensor)
+            assert isinstance(batch["observations2"], torch.Tensor)
+            assert isinstance(batch["actions1"], torch.Tensor)
+            assert isinstance(batch["actions2"], torch.Tensor)
+            
             if self.scaler is not None:
-                obs_act_1 = np.concatenate([batch["observations1"].cpu(), batch["actions1"].cpu()], axis=-1)
+                obs_act_1 = torch.cat([batch["observations1"], batch["actions1"]], dim=-1)
                 obs_act_1 = self.scaler.transform(obs_act_1)
-                obs1, act1 = np.split(obs_act_1, [batch["observations1"].shape[-1]], axis=-1)
+                obs1, act1 = torch.split(obs_act_1, [batch["observations1"].size(-1), batch["actions1"].size(-1)], dim=-1)
 
-                obs_act_2 = np.concatenate([batch["observations2"].cpu(), batch["actions2"].cpu()], axis=-1)
+                obs_act_2 = torch.cat([batch["observations2"], batch["actions2"]], dim=-1)
                 obs_act_2 = self.scaler.transform(obs_act_2)
-                obs2, act2 = np.split(obs_act_2, [batch["observations2"].shape[-1]], axis=-1)
+                obs2, act2 = torch.split(obs_act_2, [batch["observations2"].size(-1), batch["actions2"].size(-1)], dim=-1)
             else:
                 obs1, act1, obs2, act2 = batch["observations1"], batch["actions1"], batch["observations2"], batch["actions2"]
 
+            # testing if there are nans in training
+            # print(f"are there nans being fed into TRAINING: {torch.isnan(obs1).any().item(), torch.isnan(act1).any().item(), torch.isnan(obs2).any().item(), torch.isnan(act2).any().item()}")
+            
+            # compute rewards and sum for trajectories
             ensemble_pred_rew1, masks = self.model(obs1, act1, train=True) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
             ensemble_pred_rew2 = self.model(obs2, act2, masks=masks, train=True) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
+            # print(f"are any of these rewards nans: {torch.isnan(ensemble_pred_rew1).any().item(), torch.isnan(ensemble_pred_rew2).any().item()}")
             
             ensemble_pred_rew1 = ensemble_pred_rew1.sum(2) # (n_ensemble, batch_size, 1), sum(\hat{r}(\tau1)) -> logits
             ensemble_pred_rew2 = ensemble_pred_rew2.sum(2) # (n_ensemble, batch_size, 1), sum(\hat{r}(\tau2)) -> logits
@@ -192,17 +206,23 @@ class EnsembleReward(BaseReward):
         
         count = 0
         for batch in val_dataloader:
+            assert isinstance(batch["observations1"], torch.Tensor)
+            assert isinstance(batch["observations2"], torch.Tensor)
+            assert isinstance(batch["actions1"], torch.Tensor)
+            assert isinstance(batch["actions2"], torch.Tensor)
+            
             if self.scaler is not None:
-                obs_act_1 = np.concatenate([batch["observations1"].cpu(), batch["actions1"].cpu()], axis=-1)
+                obs_act_1 = torch.cat([batch["observations1"], batch["actions1"]], dim=-1)
                 obs_act_1 = self.scaler.transform(obs_act_1)
-                obs1, act1 = np.split(obs_act_1, [batch["observations1"].shape[-1]], axis=-1)
+                obs1, act1 = torch.split(obs_act_1, [batch["observations1"].size(-1), batch["actions1"].size(-1)], dim=-1)
 
-                obs_act_2 = np.concatenate([batch["observations2"].cpu(), batch["actions2"].cpu()], axis=-1)
+                obs_act_2 = torch.cat([batch["observations2"], batch["actions2"]], dim=-1)
                 obs_act_2 = self.scaler.transform(obs_act_2)
-                obs2, act2 = np.split(obs_act_2, [batch["observations2"].shape[-1]], axis=-1)
+                obs2, act2 = torch.split(obs_act_2, [batch["observations2"].size(-1), batch["actions2"].size(-1)], dim=-1)
             else:
                 obs1, act1, obs2, act2 = batch["observations1"], batch["actions1"], batch["observations2"], batch["actions2"]
 
+            # print(f"are there nans being fed into VALIDATION: {torch.isnan(obs1).any().item(), torch.isnan(act1).any().item(), torch.isnan(obs2).any().item(), torch.isnan(act2).any().item()}")
 
             ensemble_pred_rew1, _ = self.model(obs1, act1, train=False) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
             ensemble_pred_rew2, _ = self.model(obs2, act2, train=False) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))

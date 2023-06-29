@@ -261,7 +261,7 @@ class RAMBORewardLearningSharedPolicy(MOPOPolicy):
         ensemble_pred_rew = torch.stack([ensemble_pred_rew1, ensemble_pred_rew2], dim=-1) # (n_ensemble, batch_size, 2)
         
         # ground truth label from preference dataset
-        label_gt = preference_batch["label"].long() # (num_ensemble, batch_size)
+        label_gt = (1.0 - preference_batch["label"]).long() # (num_ensemble, batch_size)
         
         reward_loss = ensemble_cross_entropy(ensemble_pred_rew, label_gt, reduction='sum') # done in OPRL paper
         return reward_loss

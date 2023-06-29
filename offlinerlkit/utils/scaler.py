@@ -26,11 +26,15 @@ class StandardScaler(object):
         """Transforms the input matrix data using the parameters of this scaler.
 
         Arguments:
-        data (np.array): A numpy array or torch tensor containing the points to be transformed.
+        data (np.array / torch.Tensor): A numpy array or torch tensor containing the points to be transformed.
 
-        Returns: (np.array) The transformed dataset.
+        Returns: (np.array / torch.Tensor) The transformed data.
         """
         if isinstance(data, np.ndarray):
+            if data.ndim == 3:
+                mu = np.expand_dims(self.mu, 1)
+                std = np.expand_dims(self.std, 1)
+                
             return (data - self.mu) / self.std
         else:
             assert isinstance(data, torch.Tensor)
