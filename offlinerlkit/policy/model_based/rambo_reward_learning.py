@@ -124,7 +124,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         steps = 0
         while steps < self._adv_train_steps:
             # select initial states to roll out from
-            init_obss = real_buffer.sample(self._adv_rollout_batch_size)["observations"].cpu().numpy()
+            init_obss = real_buffer.sample(self._adv_rollout_batch_size)["observations"].cpu().numpy() # this is normalized, as buffer is normalized before training.
             observations = init_obss
             for t in range(self._adv_rollout_length):
                 # get policy actions
@@ -132,11 +132,11 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
                 
                 # real observations
                 sl_observations, sl_actions, sl_next_observations = \
-                    itemgetter("observations", "actions", "next_observations")(real_buffer.sample(self._adv_rollout_batch_size))
+                    itemgetter("observations", "actions", "next_observations")(real_buffer.sample(self._adv_rollout_batch_size)) # again, inputs are all normalized
                     
                 # gather new batch of offline data and update the model
                 offline_batch = (observations, actions, sl_observations, sl_actions, sl_next_observations)
-                preference_batch = preference_buffer.sample(self._reward_batch_size)
+                preference_batch = preference_buffer.sample(self._reward_batch_size) # unnormalized
                 next_observations, terminals, loss_info = self.dynamics_step_and_forward(offline_batch, preference_batch)
                 for _key in loss_info:
                     all_loss_info[_key] += loss_info[_key]
@@ -159,11 +159,13 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         preference_batch: Dict[str, torch.Tensor]
     ):
         observations, actions, sl_observations, sl_actions, sl_next_observations = offline_batch
+        
+        # scale
         obs_act = np.concatenate([observations, actions], axis=-1)
         obs_act = self.dynamics.scaler.transform(obs_act)
         diff_mean, logvar = self.dynamics.model(obs_act)
-        observations = torch.from_numpy(observations).to(diff_mean.device)
-        actions = torch.from_numpy(actions).to(diff_mean.device)
+        observations = torch.from_numpy(observations).to(diff_mean.device) # normalized from before
+        actions = torch.from_numpy(actions).to(diff_mean.device) # normalized from before
         
         # outputs
         diff_obs = diff_mean # in this case we don't care about reward, (n_ensemble, batch_size, state_dim)
@@ -255,8 +257,8 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         if normalize_input:
             obs_actions1 = torch.cat([preference_batch["observations1"], preference_batch["actions1"]], dim=-1)
             obs_actions2 = torch.cat([preference_batch["observations2"], preference_batch["actions2"]], dim=-1)
-            obs_actions1 = self.dynamics.scaler.transform(obs_actions1)
-            obs_actions2 = self.dynamics.scaler.transform(obs_actions2)
+            obs_actions1 = self.reward.scaler.transform(obs_actions1)
+            obs_actions2 = self.reward.scaler.transform(obs_actions2)
             obs1, actions1 = torch.split(obs_actions1, [obs_dim, action_dim], dim=-1)
             obs2, actions2 = torch.split(obs_actions2, [obs_dim, action_dim], dim=-1)
         
@@ -319,3 +321,15 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         if self.scaler is not None:
             obs = self.scaler.transform(obs)
         return super().select_action(obs, deterministic)
+    
+    def learn(self, batch: Dict) -> Dict[str, float]:
+        real_batch, fake_batch = batch["real"], batch["fake"]
+        
+        # replace real rewards with what our reward model predicts
+        old_reward_shape = real_batch["rewards"].shape
+        real_batch["rewards"] = self.reward.get_reward(real_batch["observations"], real_batch["actions"])
+        assert real_batch["rewards"].shape == old_reward_shape, "wrong reward shape!"
+        
+        # now learn on the real batch + fake batch
+        mix_batch = {k: torch.cat([real_batch[k], fake_batch[k]], 0) for k in real_batch.keys()}
+        return super().learn(mix_batch)

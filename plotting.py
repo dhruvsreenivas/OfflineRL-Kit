@@ -19,13 +19,13 @@ def plot_data(args):
     datapath = os.path.join(global_results_dir, run_dir, "record", "policy_training_progress.csv")
     df = pd.read_csv(datapath)
     
-    fig, ax = plt.subplots(4, 1, sharex='all', figsize=(24, 16))
+    fig, ax = plt.subplots(4, 1, sharex='all', figsize=(24, 16)) if args.algo != "rambo" else plt.subplots(3, 1, sharex='all', figsize=(24, 16))
     timesteps = df["timestep"]
     
     # get the relevant hparams and add in
     with open(os.path.join(global_results_dir, run_dir, "record", "hyper_param.json")) as f:
         hparams = json.load(f)
-        use_scaler = hparams["use_reward_scaler"]
+        use_scaler = hparams["use_reward_scaler"] if "use_scaler" in hparams else True # default RAMBO just uses it throughout
     
     # set title
     fig.suptitle(f"{'RAMBO with pref-based reward learning' if args.algo == 'rambo_reward_learning' else 'RAMBO GT'} on {args.task} {'with reward scaler' if use_scaler else 'without scaler'}")
@@ -34,16 +34,27 @@ def plot_data(args):
     ax[0].plot(timesteps, df["eval/normalized_episode_reward"])
     ax[0].set_ylabel("Normalized episode reward")
     
-    # print the reward BCE loss
-    ax[1].plot(timesteps, df["adv_reward_update/reward_bce_loss"])
-    ax[1].set_ylabel("Reward BCE loss")
-    
-    # print the actor + critic losses
-    ax[2].plot(timesteps, df["loss/actor"])
-    ax[2].set_ylabel("Actor loss")
-    
-    ax[3].plot(timesteps, (df["loss/critic1"] + df["loss/critic2"]) / 2)
-    ax[3].set_ylabel("Average critic loss")
+    if args.algo != "rambo":
+        # print the reward BCE loss
+        ax[1].plot(timesteps, df["adv_reward_update/reward_bce_loss"])
+        ax[1].set_ylabel("Reward BCE loss")
+        
+        # print the actor + critic losses
+        ax[2].plot(timesteps, df["loss/actor"])
+        ax[2].set_ylabel("Actor loss")
+        
+        ax[3].plot(timesteps, (df["loss/critic1"] + df["loss/critic2"]) / 2)
+        ax[3].set_ylabel("Average critic loss")
+    else:
+        # print the actor + critic losses
+        ax[1].plot(timesteps, df["loss/actor"])
+        ax[1].set_ylabel("Actor loss")
+        
+        ax[2].plot(timesteps, (df["loss/critic1"] + df["loss/critic2"]) / 2)
+        ax[2].set_ylabel("Average critic loss")
+        
+    # set x label
+    plt.xlabel("Training timesteps")
     
     # save plot
     plot_dir = f"./plots/{args.task}/{args.algo}/{run_dir}"
@@ -52,6 +63,62 @@ def plot_data(args):
     plt.savefig(f"{plot_dir}/progress_plot.jpg")
     
     
+def plot_multiple_runs(task, algos, runs):
+    assert len(runs) == len(algos), "Need one run per algo"
+    
+    # set up plots
+    fig, ax = plt.subplots(4, 1, sharex='all', figsize=(24, 16))
+    # set title
+    fig.suptitle("Comparison of different RAMBO runs")
+    
+    for algo, run in zip(algos, runs):
+        global_dir = f"./log/{task}/{algo}"
+        datapath = os.path.join(global_dir, run, "record", "policy_training_progress.csv")
+        df = pd.read_csv(datapath)
+        
+        timesteps = df["timestep"]
+        
+        # get the relevant hparams and add in
+        with open(os.path.join(global_dir, run, "record", "hyper_param.json")) as f:
+            hparams = json.load(f)
+            use_scaler = hparams["use_reward_scaler"] if "use_reward_scaler" in hparams.keys() else True # default RAMBO just uses it throughout
+        lbl = f"{algo}_{'scaled' if use_scaler else 'unscaled'}"
+        
+        ax[0].plot(timesteps, df["eval/normalized_episode_reward"], label=lbl)
+        ax[0].set_ylabel("Normalized episode reward")
+        
+        if algo != "rambo":
+            # print the reward BCE loss
+            ax[1].plot(timesteps, df["adv_reward_update/reward_bce_loss"], label=lbl)
+            ax[1].set_ylabel("Reward BCE loss")
+            
+            # print the actor + critic losses
+            ax[2].plot(timesteps, df["loss/actor"], label=lbl)
+            ax[2].set_ylabel("Actor loss")
+            
+            ax[3].plot(timesteps, (df["loss/critic1"] + df["loss/critic2"]) / 2, label=lbl)
+            ax[3].set_ylabel("Average critic loss")
+        else:
+            # print the actor + critic losses
+            ax[2].plot(timesteps, df["loss/actor"], label=lbl)
+            ax[2].set_ylabel("Actor loss")
+            
+            ax[3].plot(timesteps, (df["loss/critic1"] + df["loss/critic2"]) / 2, label=lbl)
+            ax[3].set_ylabel("Average critic loss")
+            
+        # set x label
+        plt.xlabel("Training timesteps")
+        plt.legend(loc='lower right')
+        
+        # save plot
+        plot_dir = f"./plots/{task}/full_comp/"
+        if not os.path.exists(plot_dir):
+            os.makedirs(plot_dir)
+        plt.savefig(f"{plot_dir}/progress_plot.jpg")
+    
 if __name__ == "__main__":
-    args = get_plot_args()
-    plot_data(args)
+    task = 'halfcheetah-random-v2'
+    algos = ['rambo', 'rambo_reward_learning', 'rambo_reward_learning']
+    runs = ['seed_0&timestamp_23-0615-085124', 'seed_0&timestamp_23-0701-174859', 'seed_0&timestamp_23-0701-174735']
+    
+    plot_multiple_runs(task, algos, runs)

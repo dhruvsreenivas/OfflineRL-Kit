@@ -84,7 +84,7 @@ class EnsembleDynamics(BaseDynamics):
         
         terminal = self.terminal_fn(obs, action, next_obs)
         info = {}
-        if reward:
+        if reward is not None:
             info["raw_reward"] = reward 
 
         if self._penalty_coef:
@@ -144,7 +144,7 @@ class EnsembleDynamics(BaseDynamics):
         actions = data["actions"]
         next_obss = data["next_observations"]
         inputs = np.concatenate((obss, actions), axis=-1)
-        targets = next_obss - obss # delta_obss
+        targets = next_obss - obss if not self.model._with_reward else np.concatenate([next_obss - obss, data["rewards"]], axis=-1) # [delta_obss, r] or [delta_obss]
         return inputs, targets
 
     def train(

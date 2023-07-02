@@ -1,6 +1,3 @@
-import warnings
-warnings.filterwarnings('ignore')
-
 import argparse
 import random
 
@@ -19,8 +16,9 @@ from offlinerlkit.utils.scaler import StandardScaler
 from offlinerlkit.utils.termination_fns import get_termination_fn, obs_unnormalization
 from offlinerlkit.buffer import ReplayBuffer, PreferenceDataset
 from offlinerlkit.utils.logger import Logger, make_log_dirs
-from offlinerlkit.policy_trainer import PrefMBPolicyTrainer
-from offlinerlkit.policy import RAMBORewardLearningPolicy
+from offlinerlkit.policy_trainer import MBPolicyTrainer
+from offlinerlkit.policy import RAMBOPolicy
+
 
 """
 suggested hypers
@@ -40,8 +38,8 @@ walker2d-medium-expert-v2: rollout-length=2, adv-weight=3e-4
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--netid", type=str, default="ds844")
-    parser.add_argument("--algo-name", type=str, default="rambo_reward_learning")
-    parser.add_argument("--task", type=str, default="halfcheetah-random-v2")
+    parser.add_argument("--algo-name", type=str, default="rambo_relabeled")
+    parser.add_argument("--task", type=str, default="hopper-medium-expert-v2")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--actor-lr", type=float, default=1e-4)
     parser.add_argument("--critic-lr", type=float, default=3e-4)
@@ -56,7 +54,6 @@ def get_args():
     parser.add_argument("--alpha-lr", type=float, default=1e-4)
 
     parser.add_argument("--dynamics-hidden-dims", type=int, nargs='*', default=[200, 200, 200, 200])
-    parser.add_argument("--dynamics-dropout-probs", type=float, nargs='*', default=[0.0, 0.0, 0.0, 0.0])
     parser.add_argument("--dynamics-weight-decay", type=float, nargs='*', default=[2.5e-5, 5e-5, 7.5e-5, 7.5e-5, 1e-4])
     parser.add_argument("--n-ensemble", type=int, default=7)
     parser.add_argument("--n-elites", type=int, default=5)
@@ -69,7 +66,6 @@ def get_args():
     parser.add_argument("--model-retain-epochs", type=int, default=5)
     parser.add_argument("--real-ratio", type=float, default=0.5)
     parser.add_argument("--load-dynamics-path", type=str, default=None)
-    parser.add_argument("--max-dynamics-pretrain-epochs", type=int, default=500)
 
     parser.add_argument("--epoch", type=int, default=2000)
     parser.add_argument("--step-per-epoch", type=int, default=1000)
@@ -90,15 +86,13 @@ def get_args():
     parser.add_argument("--reward-lr", type=float, default=3e-4)
     parser.add_argument("--n-reward_models", type=int, default=7)
     parser.add_argument("--n-reward-elites", type=int, default=5)
-    parser.add_argument("--reward-with-action", type=bool, default=True)
+    parser.add_argument("--reward-with-action", action="store_true")
     parser.add_argument("--segment-length", type=int, default=15)
-    parser.add_argument("--load-reward-path", type=str, default=None)
     parser.add_argument("--reward-penalty-coef", type=float, default=0.0)
     parser.add_argument("--reward_batch_size", type=int, default=256)
+    parser.add_argument("--use-reward-scaler", action='store_true', help='whether to use dynamics scaler for reward learning or not')
     parser.add_argument("--reward-uncertainty-mode", type=str, default="aleatoric")
     parser.add_argument("--reward-final-activation", type=str, default="none")
-    parser.add_argument("--adv-reward-coef", type=float, default=1.0)
-    parser.add_argument("--use-reward-scaler", action='store_true', help='whether to use dynamics scaler for reward learning or not')
 
     return parser.parse_args()
 
@@ -168,7 +162,7 @@ def train(args=get_args()):
     else:
         alpha = args.alpha
 
-    # create buffers
+    # create buffer
     real_buffer = ReplayBuffer(
         buffer_size=len(dataset["observations"]),
         obs_shape=args.obs_shape,
@@ -178,7 +172,7 @@ def train(args=get_args()):
         device=args.device
     )
     real_buffer.load_dataset(dataset)
-    obs_mean, obs_std = real_buffer.normalize_obs() # ONLY OBSERVATIONS ARE NORMALIZED!
+    obs_mean, obs_std = real_buffer.normalize_obs()
     fake_buffer_size = args.step_per_epoch // args.rollout_freq * args.model_retain_epochs * args.rollout_batch_size * args.rollout_length
     fake_buffer = ReplayBuffer(
         buffer_size=fake_buffer_size, 
@@ -189,11 +183,6 @@ def train(args=get_args()):
         device=args.device
     )
     
-    dataset_path = f"/home/{args.netid}/OfflineRL-Kit/offline_data/{args.task}_snippet_preference_dataset_seglen{args.segment_length}_deterministic.pt" # here, observations are not normalized
-    pref_dataset = torch.load(dataset_path)
-    pref_dataset.normalize_obs(obs_mean, obs_std) # normalize everything
-    pref_dataset.device = args.device
-    
     # create dynamics
     dynamics_model = EnsembleDynamicsModel(
         obs_dim=np.prod(args.obs_shape),
@@ -202,8 +191,6 @@ def train(args=get_args()):
         num_ensemble=args.n_ensemble,
         num_elites=args.n_elites,
         weight_decays=args.dynamics_weight_decay,
-        with_reward=False,
-        dropout_probs=args.dynamics_dropout_probs,
         device=args.device
     )
     dynamics_optim = torch.optim.Adam(
@@ -222,8 +209,58 @@ def train(args=get_args()):
         dynamics_scaler,
         termination_fn,
     )
+
+    # create policy
+    policy_scaler = StandardScaler(mu=obs_mean, std=obs_std)
+    policy = RAMBOPolicy(
+        dynamics, 
+        actor, 
+        critic1, 
+        critic2, 
+        actor_optim, 
+        critic1_optim, 
+        critic2_optim, 
+        dynamics_adv_optim,
+        tau=args.tau, 
+        gamma=args.gamma, 
+        alpha=alpha, 
+        adv_weight=args.adv_weight, 
+        adv_rollout_length=args.rollout_length, 
+        adv_rollout_batch_size=args.adv_batch_size,
+        include_ent_in_adv=args.include_ent_in_adv,
+        scaler=policy_scaler,
+        device=args.device
+    ).to(args.device)
+
+    # log
+    log_dirs = make_log_dirs(args.task, args.algo_name, args.seed, vars(args))
+    # key: output file name, value: output handler type
+    output_config = {
+        "consoleout_backup": "stdout",
+        "policy_training_progress": "csv",
+        "dynamics_training_progress": "csv",
+        "tb": "tensorboard"
+    }
+    logger = Logger(log_dirs, output_config)
+    logger.log_hyperparameters(vars(args))
+
+    # create policy trainer
+    policy_trainer = MBPolicyTrainer(
+        policy=policy,
+        eval_env=env,
+        real_buffer=real_buffer,
+        fake_buffer=fake_buffer,
+        logger=logger,
+        rollout_setting=(args.rollout_freq, args.rollout_batch_size, args.rollout_length),
+        dynamics_update_freq=args.dynamics_update_freq,
+        epoch=args.epoch,
+        step_per_epoch=args.step_per_epoch,
+        batch_size=args.batch_size,
+        real_ratio=args.real_ratio,
+        eval_episodes=args.eval_episodes
+    )
     
-    # create reward learner
+    # create reward model and train it
     reward_model = EnsembleRewardModel(
         obs_dim=np.prod(args.obs_shape),
         action_dim=args.action_dim,
@@ -247,72 +284,42 @@ def train(args=get_args()):
         args.reward_penalty_coef,
         args.reward_uncertainty_mode
     )
-    if args.load_reward_path:
-        reward.load(args.load_reward_path)
-        
-    # create policy
-    policy_scaler = StandardScaler(mu=obs_mean, std=obs_std)
-    policy = RAMBORewardLearningPolicy(
-        dynamics,
-        reward,
-        actor,
-        critic1,
-        critic2,
-        actor_optim, 
-        critic1_optim, 
-        critic2_optim, 
-        dynamics_adv_optim,
-        reward_optim,
-        tau=args.tau, 
-        gamma=args.gamma, 
-        alpha=alpha, 
-        adv_weight=args.adv_weight, 
-        adv_rollout_length=args.rollout_length, 
-        adv_rollout_batch_size=args.adv_batch_size,
-        adv_reward_loss_coef=args.adv_reward_coef,
-        include_ent_in_adv=args.include_ent_in_adv,
-        scaler=policy_scaler,
-        device=args.device
-    ).to(args.device)
     
-    # log
-    log_dirs = make_log_dirs(args.task, args.algo_name, args.seed, vars(args))
-    # key: output file name, value: output handler type
-    output_config = {
-        "consoleout_backup": "stdout",
-        "policy_training_progress": "csv",
-        "dynamics_training_progress": "csv",
-        "reward_training_progress": "csv",
-        "tb": "tensorboard"
-    }
-    logger = Logger(log_dirs, output_config)
-    logger.log_hyperparameters(vars(args))
+    # create preference dataset
+    dataset_path = f"/home/{args.netid}/OfflineRL-Kit/offline_data/{args.task}_snippet_preference_dataset_seglen{args.segment_length}_deterministic.pt"
+    pref_dataset = torch.load(dataset_path)
+    pref_dataset.device = args.device
     
-    # create policy trainer
-    policy_trainer = PrefMBPolicyTrainer(
-        policy=policy,
-        eval_env=env,
-        preference_dataset=pref_dataset,
-        real_buffer=real_buffer,
-        fake_buffer=fake_buffer,
-        logger=logger,
-        rollout_setting=(args.rollout_freq, args.rollout_batch_size, args.rollout_length),
-        dynamics_update_freq=args.dynamics_update_freq,
-        epoch=args.epoch,
-        step_per_epoch=args.step_per_epoch,
-        batch_size=args.batch_size,
-        real_ratio=args.real_ratio,
-        eval_episodes=args.eval_episodes
+    # train reward
+    reward.train(
+        pref_dataset,
+        logger,
+        holdout_ratio=0.1,
+        max_epochs_since_update=10,
+        batch_size=args.reward_batch_size
     )
     
-    # pretrain policy
+    # validate reward
+    validate_reward_model(reward, pref_dataset)
+    
+    # relabel all rewards in the dataset
+    for i in range(real_buffer._size):
+        obs = np.expand_dims(real_buffer.observations[i], 0) # (1, obs_dim)
+        action = np.expand_dims(real_buffer.actions[i], 0) # (1, action_dim)
+        rewards = reward.get_reward(obs, action) # (1, 1)
+        
+        # print shapes to debug
+        # print(f"{obs.shape}, {action.shape}, {rewards.shape}")
+        
+        real_buffer.rewards[i] = rewards.squeeze()
+
+    # train
     if args.load_bc_path:
         policy.load(args.load_bc_path)
         policy.to(args.device)
     else:
         policy.pretrain(real_buffer.sample_all(), args.bc_epoch, args.bc_batch_size, args.bc_lr, logger)
-
-    # train pure dynamics
+    
     if args.load_dynamics_path:
         dynamics.load(args.load_dynamics_path)
     else:
@@ -322,24 +329,9 @@ def train(args=get_args()):
             logger,
             holdout_ratio=0.1,
             logvar_loss_coef=0.001,
-            max_epochs=args.max_dynamics_pretrain_epochs,
             max_epochs_since_update=10
         )
-        # sets dynamics scaler here, so have stats for reward
-    
-    # train reward model if needed (using dynamics scaler!!!)
-    if not args.load_reward_path:
-        reward.train(
-            pref_dataset,
-            logger,
-            holdout_ratio=0.1,
-            max_epochs_since_update=10,
-            batch_size=args.reward_batch_size
-        )
-    
-    validate_reward_model(reward, pref_dataset)
 
-    # train policy (either with reward model adversarially (our approach) or treating as GT (no reward))
     policy_trainer.train()
 
 

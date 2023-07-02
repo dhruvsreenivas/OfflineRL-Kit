@@ -31,11 +31,13 @@ class StandardScaler(object):
         Returns: (np.array / torch.Tensor) The transformed data.
         """
         if isinstance(data, np.ndarray):
+            mu = self.mu
+            std = self.std
             if data.ndim == 3:
-                mu = np.expand_dims(self.mu, 1)
-                std = np.expand_dims(self.std, 1)
+                mu = np.expand_dims(mu, 1)
+                std = np.expand_dims(std, 1)
                 
-            return (data - self.mu) / self.std
+            return (data - mu) / std
         else:
             assert isinstance(data, torch.Tensor)
             mu = torch.from_numpy(self.mu).to(data.device)
@@ -56,7 +58,25 @@ class StandardScaler(object):
 
         Returns: (np.array) The transformed dataset.
         """
-        return self.std * data + self.mu
+        if isinstance(data, np.ndarray):
+            mu = self.mu
+            std = self.std
+            if data.ndim == 3:
+                mu = np.expand_dims(mu, 1)
+                std = np.expand_dims(std, 1)
+                
+            return std * data + mu
+        else:
+            assert isinstance(data, torch.Tensor)
+            mu = torch.from_numpy(self.mu).to(data.device)
+            std = torch.from_numpy(self.std).to(data.device)
+            
+            if data.dim() == 3:
+                # (batch_size, seg_len, dim) -- mu/std is of shape (1, dim)
+                mu = mu.unsqueeze(1)
+                std = std.unsqueeze(1)
+                
+            return std * data + mu
     
     def save_scaler(self, save_path):
         mu_path = path.join(save_path, "mu.npy")

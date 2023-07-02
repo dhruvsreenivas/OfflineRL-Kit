@@ -124,6 +124,18 @@ class PreferenceDataset(Dataset):
         self.offline_data = offline_data
         self.device = torch.device(device)
         
+    def normalize_obs(self, obs_mean: np.ndarray, obs_std: np.ndarray) -> None:
+        for i in range(len(self.offline_data)):
+            # obs are of shape (seg_len, obs_dim), obs_mean is of shape (1, obs_dim)
+            tau1, tau2, label = self.offline_data[i]
+            
+            tau1["observations"] = (tau1["observations"] - obs_mean) / (obs_std + 1e-3)
+            tau1["next_observations"] = (tau1["next_observations"] - obs_mean) / (obs_std + 1e-3)
+            tau2["observations"] = (tau2["observations"] - obs_mean) / (obs_std + 1e-3)
+            tau2["next_observations"] = (tau2["next_observations"] - obs_mean) / (obs_std + 1e-3)
+            
+            self.offline_data[i] = (tau1, tau2, label)
+        
     def __len__(self):
         """Number of trajectory pairs."""
         return len(self.offline_data)
@@ -169,6 +181,8 @@ class PreferenceDataset(Dataset):
         # delete everything that is not necessary
         del obs1, acts1, obs2, acts2, obs_actions1, obs_actions2, obs_actions
         return mean.cpu().numpy(), std.cpu().numpy()
+    
+# =================================== END PREFRENCE ONLY BUFFER ===================================
 
 def filter(dataset: PreferenceDataset, idxs: list) -> PreferenceDataset:
     dps = [dataset[idx] for idx in idxs]
