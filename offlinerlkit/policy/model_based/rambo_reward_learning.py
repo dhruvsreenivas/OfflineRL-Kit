@@ -180,7 +180,13 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         selected_indexes = self.dynamics.model.random_elite_idxs(batch_size)
         sample = ensemble_sample[selected_indexes, np.arange(batch_size)]
         next_observations = sample
-        ensemble_rewards, _ = self.reward.model(observations, actions) # (n_ensemble, batch_size, 1) for the moment -- this is for adversarial update
+        if self.reward.scaler is not None:
+            obs_dim, action_dim = preference_batch["observations1"].size(-1), preference_batch["actions1"].size(-1)
+            obs_act = torch.from_numpy(obs_act).to(diff_mean.device)
+            observations_reward_input, actions_reward_input = torch.split(obs_act, [obs_dim, action_dim], dim=-1)
+        else:
+            observations_reward_input, actions_reward_input = observations, actions
+        ensemble_rewards, _ = self.reward.model(observations_reward_input, actions_reward_input) # (n_ensemble, batch_size, 1) for the moment -- this is for adversarial update
         # also get the elite idxs for rewards
         rewards = ensemble_rewards[selected_indexes, np.arange(batch_size)]
         
@@ -327,9 +333,10 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         
         # replace real rewards with what our reward model predicts
         old_reward_shape = real_batch["rewards"].shape
-        real_batch["rewards"] = self.reward.get_reward(real_batch["observations"], real_batch["actions"])
+        pred_rewards = self.reward.get_reward(real_batch["observations"], real_batch["actions"])
+        real_batch["rewards"] = torch.from_numpy(pred_rewards).to(fake_batch["rewards"].device)
         assert real_batch["rewards"].shape == old_reward_shape, "wrong reward shape!"
         
         # now learn on the real batch + fake batch
-        mix_batch = {k: torch.cat([real_batch[k], fake_batch[k]], 0) for k in real_batch.keys()}
-        return super().learn(mix_batch)
+        batch = {"real": real_batch, "fake": fake_batch}
+        return super().learn(batch)
