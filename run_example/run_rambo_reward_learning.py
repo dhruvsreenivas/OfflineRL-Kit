@@ -1,6 +1,6 @@
 import warnings
 warnings.filterwarnings('ignore')
-
+import getpass
 import argparse
 import random
 
@@ -39,7 +39,7 @@ walker2d-medium-expert-v2: rollout-length=2, adv-weight=3e-4
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--netid", type=str, default="ds844")
+    parser.add_argument("--netid", type=str, default=None)
     parser.add_argument("--algo-name", type=str, default="rambo_reward_learning")
     parser.add_argument("--task", type=str, default="halfcheetah-random-v2")
     parser.add_argument("--seed", type=int, default=0)
@@ -124,6 +124,8 @@ def validate_reward_model(ensemble: EnsembleReward, dataset: PreferenceDataset) 
 
 
 def train(args=get_args()):
+    # get netid
+    netid = args.netid if args.netid is not None else getpass.getuser()
     # create env and dataset
     env = gym.make(args.task)
     dataset = d4rl.qlearning_dataset(env)
@@ -189,7 +191,7 @@ def train(args=get_args()):
         device=args.device
     )
     
-    dataset_path = f"/home/{args.netid}/OfflineRL-Kit/offline_data/{args.task}_snippet_preference_dataset_seglen{args.segment_length}_deterministic.pt" # here, observations are not normalized
+    dataset_path = f"/home/{netid}/OfflineRL-Kit/offline_data/{args.task}_snippet_preference_dataset_seglen{args.segment_length}_deterministic.pt" # here, observations are not normalized
     pref_dataset = torch.load(dataset_path)
     pref_dataset.normalize_obs(obs_mean, obs_std) # normalize everything
     pref_dataset.device = args.device
