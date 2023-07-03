@@ -278,7 +278,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
             "adv_reward_update/reward_bce_loss": sl_loss_reward.cpu().item(),
             "adv_update/v_pi": v_pi.cpu().item(), 
             "adv_update/v_dataset": v_dataset.cpu().item(), 
-            "adv_dynamics_update/sl_loss_dynamics": sl_loss_reward.cpu().item(), 
+            "adv_dynamics_update/sl_loss_dynamics": sl_loss_dynamics.cpu().item(), 
         }
         
     def reward_loss(self, preference_batch: Dict[str, torch.Tensor], normalize_input: bool = False) -> torch.Tensor:
