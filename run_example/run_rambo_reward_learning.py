@@ -97,6 +97,7 @@ def get_args():
     parser.add_argument("--reward_batch_size", type=int, default=256)
     parser.add_argument("--reward-uncertainty-mode", type=str, default="aleatoric")
     parser.add_argument("--reward-final-activation", type=str, default="none")
+    parser.add_argument("--adv-dynamics-coef", type=float, default=1.0)
     parser.add_argument("--adv-reward-coef", type=float, default=1.0)
     parser.add_argument("--use-reward-scaler", action='store_true', help='whether to use dynamics scaler for reward learning or not')
 
@@ -271,6 +272,7 @@ def train(args=get_args()):
         adv_weight=args.adv_weight, 
         adv_rollout_length=args.rollout_length, 
         adv_rollout_batch_size=args.adv_batch_size,
+        adv_dynamics_loss_coef=args.adv_dynamics_coef,
         adv_reward_loss_coef=args.adv_reward_coef,
         include_ent_in_adv=args.include_ent_in_adv,
         scaler=policy_scaler,
@@ -339,7 +341,7 @@ def train(args=get_args()):
             batch_size=args.reward_batch_size
         )
     
-    validate_reward_model(reward, pref_dataset)
+    # validate_reward_model(reward, pref_dataset)
 
     # train policy (either with reward model adversarially (our approach) or treating as GT (no reward))
     policy_trainer.train()

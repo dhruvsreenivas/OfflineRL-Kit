@@ -34,12 +34,12 @@ class EnsembleReward(BaseReward):
         obs: np.ndarray,
         action: np.ndarray
     ) -> np.ndarray:
+        if torch.is_tensor(obs):
+            obs = obs.cpu().numpy()
+        if torch.is_tensor(action):
+            action = action.cpu().numpy()
         # concat, scale and split back
         if self.scaler is not None:
-            if torch.is_tensor(obs):
-                obs = obs.cpu().numpy()
-            if torch.is_tensor(action):
-                action = action.cpu().numpy()
             obs_act = np.concatenate([obs, action], axis=-1)
             obs_act = self.scaler.transform(obs_act)
             obs, action = np.split(obs_act, [obs.shape[-1]], axis=-1)
