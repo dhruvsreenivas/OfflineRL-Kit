@@ -215,14 +215,15 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
             if self._include_ent_in_adv:
                 next_q = next_q - self._alpha * next_policy_log_prob
 
-            value = rewards + (1 - torch.from_numpy(terminals).to(mean.device).float()) * self._gamma * next_q
-
+        value = rewards + (1 - torch.from_numpy(terminals).to(mean.device).float()) * self._gamma * next_q
+        
+        with torch.no_grad():
             value_baseline = torch.minimum(
                 self.critic1(observations, actions), 
                 self.critic2(observations, actions)
             )
-            advantage = value - value_baseline
-            advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-6)
+        advantage = value - value_baseline
+        advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-6)
         v_pi = (log_prob * advantage).mean()
         # expected total return of behaviour policy under current reward model
         sl_observations = torch.from_numpy(sl_observations).to(diff_mean.device) if not torch.is_tensor(sl_observations) else sl_observations
@@ -299,6 +300,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         
         ensemble_pred_rew1 = ensemble_pred_rew1.sum(2) # (n_ensemble, batch_size, 1), sum(\hat{r}(\tau1)) -> logits
         ensemble_pred_rew2 = ensemble_pred_rew2.sum(2) # (n_ensemble, batch_size, 1), sum(\hat{r}(\tau2)) -> logits
+        
         
         # get stacked logits before throwing to cross entropy loss
         ensemble_pred_rew = torch.cat([ensemble_pred_rew1, ensemble_pred_rew2], dim=-1) # (n_ensemble, batch_size, 2)
