@@ -98,7 +98,7 @@ def get_args():
     parser.add_argument("--reward-uncertainty-mode", type=str, default="aleatoric")
     parser.add_argument("--reward-final-activation", type=str, default="none")
     parser.add_argument("--adv-reward-coef", type=float, default=1.0)
-    parser.add_argument("--use-reward-scaler", action='store_true', help='whether to use dynamics scaler for reward learning or not')
+    parser.add_argument("--use-reward-scaler", type=bool, default=True, help='whether to use dynamics scaler for reward learning or not')
 
     return parser.parse_args()
 

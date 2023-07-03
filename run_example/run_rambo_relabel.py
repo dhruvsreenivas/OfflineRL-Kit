@@ -260,7 +260,7 @@ def train(args=get_args()):
         eval_episodes=args.eval_episodes
     )
     
-    # create reward model and train it
+    # create reward model and train 
     reward_model = EnsembleRewardModel(
         obs_dim=np.prod(args.obs_shape),
         action_dim=args.action_dim,
@@ -288,6 +288,7 @@ def train(args=get_args()):
     # create preference dataset
     dataset_path = f"/home/{args.netid}/OfflineRL-Kit/offline_data/{args.task}_snippet_preference_dataset_seglen{args.segment_length}_deterministic.pt"
     pref_dataset = torch.load(dataset_path)
+    pref_dataset.normalize_obs(obs_mean, obs_std)
     pref_dataset.device = args.device
     
     # train reward
