@@ -230,7 +230,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         sl_actions = torch.from_numpy(sl_actions).to(diff_mean.device) if not torch.is_tensor(sl_actions) else sl_actions
         if self.reward.scaler is not None:
             obs_dim, action_dim = sl_observations.shape[-1], sl_actions.shape[-1]
-            dataset_obs_act = torch.cat([sl_observations, sl_actions], axis=-1)
+            dataset_obs_act = torch.cat([sl_observations, sl_actions], dim=-1)
             dataset_observations_reward_input, dataset_actions_reward_input = torch.split(dataset_obs_act, [obs_dim, action_dim], dim=-1)
         else:
             dataset_observations_reward_input, dataset_actions_reward_input = sl_observations, sl_actions
@@ -240,7 +240,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         v_dataset = dataset_rewards.mean()
         
         # total adv loss
-        adv_loss = v_pi - v_dataset
+        adv_loss = (1 / (1 - self._gamma + 1e-6)) * (v_pi - v_dataset)
 
         # compute the supervised loss
         sl_input = torch.cat([sl_observations, sl_actions], dim=-1).cpu().numpy()
