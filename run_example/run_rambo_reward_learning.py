@@ -94,6 +94,7 @@ def get_args():
     parser.add_argument("--segment-length", type=int, default=15)
     parser.add_argument("--load-reward-path", type=str, default=None)
     parser.add_argument("--reward-penalty-coef", type=float, default=0.0)
+    parser.add_argument("--normalize-reward-eval", type=bool, default=False)
     parser.add_argument("--reward_batch_size", type=int, default=256)
     parser.add_argument("--reward-uncertainty-mode", type=str, default="aleatoric")
     parser.add_argument("--reward-final-activation", type=str, default="none")
@@ -194,7 +195,7 @@ def train(args=get_args()):
     
     dataset_path = f"/home/{netid}/OfflineRL-Kit/offline_data/{args.task}_snippet_preference_dataset_seglen{args.segment_length}_deterministic.pt" # here, observations are not normalized
     pref_dataset = torch.load(dataset_path)
-    pref_dataset.normalize_obs(obs_mean, obs_std) # normalize everything
+    pref_dataset.normalize_obs(obs_mean, obs_std) # normalize everything, same scale as regular replay buffer
     pref_dataset.device = args.device
     
     # create dynamics
@@ -247,6 +248,7 @@ def train(args=get_args()):
         reward_model,
         reward_optim,
         dynamics.scaler if args.use_reward_scaler else None,
+        args.normalize_reward_eval,
         args.reward_penalty_coef,
         args.reward_uncertainty_mode
     )

@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from typing import Callable, List, Tuple, Dict, Optional
+from typing import Callable, List, Tuple, Dict, Optional, Union
 from offlinerlkit.rewards import BaseReward
 from offlinerlkit.utils.scaler import StandardScaler
 from offlinerlkit.utils.logger import Logger
@@ -19,25 +19,29 @@ class EnsembleReward(BaseReward):
         model: nn.Module,
         optim: torch.optim.Optimizer,
         scaler: Optional[StandardScaler],
+        normalize_reward_eval: bool = False,
         penalty_coef: float = 0.0,
         uncertainty_mode: str = "aleatoric"
     ) -> None:
         super().__init__(model, optim)
         
         self.scaler = scaler
+        self._normalize_reward_eval = normalize_reward_eval
         self._penalty_coef = penalty_coef
         self._uncertainty_mode = uncertainty_mode
         
     @torch.no_grad()
     def get_reward(
         self,
-        obs: np.ndarray,
-        action: np.ndarray
+        obs: Union[np.ndarray, torch.Tensor],
+        action: Union[np.ndarray, torch.Tensor]
     ) -> np.ndarray:
+        # convert tensors to numpy arrays
         if torch.is_tensor(obs):
             obs = obs.cpu().numpy()
         if torch.is_tensor(action):
             action = action.cpu().numpy()
+        
         # concat, scale and split back
         if self.scaler is not None:
             obs_act = np.concatenate([obs, action], axis=-1)
@@ -53,8 +57,13 @@ class EnsembleReward(BaseReward):
         # choose one from the ensemble (elite set here for evaluation)
         batch_size = ensemble_rewards.shape[1]
         model_idxs = self.model.random_elite_idxs(batch_size)
-        rewards = ensemble_rewards[model_idxs, np.arange(batch_size)]
-        # print(f'reward shape: {rewards.shape}') # (seg_len, 1)
+        rewards = ensemble_rewards[model_idxs, np.arange(batch_size)] # (seg_len or batch_size, 1)
+        
+        # normalize if necessary over the batch
+        if self._normalize_reward_eval:
+            rew_mean = np.mean(rewards, axis=0, keepdims=True)
+            rew_std = np.std(rewards, axis=0, keepdims=True)
+            rewards = (rewards - rew_mean) / (rew_std + 1e-8)
         
         info = {}
         if self._penalty_coef:

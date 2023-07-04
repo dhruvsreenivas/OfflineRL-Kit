@@ -8,7 +8,7 @@ def get_plot_args():
     parser = argparse.ArgumentParser(description="plotting")
     parser.add_argument("--task", type=str, default='halfcheetah-random-v2')
     parser.add_argument('--algo', type=str, default='rambo_reward_learning')
-    parser.add_argument("--run-id", type=str, default="seed_0&timestamp_23-0701-174859")
+    parser.add_argument("--run-id", type=str, default="seed_0&timestamp_23-0703-215834")
 
     args = parser.parse_args()
     return args
@@ -19,7 +19,7 @@ def plot_data(args):
     datapath = os.path.join(global_results_dir, run_dir, "record", "policy_training_progress.csv")
     df = pd.read_csv(datapath)
     
-    fig, ax = plt.subplots(4, 1, sharex='all', figsize=(24, 16)) if args.algo != "rambo" else plt.subplots(3, 1, sharex='all', figsize=(24, 16))
+    fig, ax = plt.subplots(6, 1, sharex='all', figsize=(36, 16)) if args.algo != "rambo" else plt.subplots(4, 1, sharex='all', figsize=(36, 16))
     timesteps = df["timestep"]
     
     # get the relevant hparams and add in
@@ -45,6 +45,12 @@ def plot_data(args):
         
         ax[3].plot(timesteps, (df["loss/critic1"] + df["loss/critic2"]) / 2)
         ax[3].set_ylabel("Average critic loss")
+        
+        ax[4].plot(timesteps, df["adv_dynamics_update/all_loss"])
+        ax[4].set_ylabel("Total objective")
+        
+        ax[5].plot(timesteps, df["adv_update/v_dataset"])
+        ax[5].set_ylabel("Average learned reward on dataset")
     else:
         # print the actor + critic losses
         ax[1].plot(timesteps, df["loss/actor"])
@@ -117,8 +123,9 @@ def plot_multiple_runs(task, algos, runs):
         plt.savefig(f"{plot_dir}/progress_plot.jpg")
     
 if __name__ == "__main__":
-    task = 'halfcheetah-random-v2'
-    algos = ['rambo', 'rambo_reward_learning', 'rambo_reward_learning']
-    runs = ['seed_0&timestamp_23-0615-085124', 'seed_0&timestamp_23-0701-174859', 'seed_0&timestamp_23-0701-174735']
+    # task = 'halfcheetah-random-v2'
+    # algos = ['rambo', 'rambo_reward_learning', 'rambo_reward_learning']
+    # runs = ['seed_0&timestamp_23-0615-085124', 'seed_0&timestamp_23-0701-174859', 'seed_0&timestamp_23-0701-174735']
     
-    plot_multiple_runs(task, algos, runs)
+    # plot_multiple_runs(task, algos, runs)
+    plot_data(get_plot_args())
