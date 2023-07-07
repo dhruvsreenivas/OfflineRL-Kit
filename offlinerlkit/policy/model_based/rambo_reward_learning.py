@@ -74,7 +74,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         self._include_ent_in_adv = include_ent_in_adv
         self.scaler = scaler
         self.device = device
-        self.count = (0, 0)
+        self.count = (0, 0, 0)
         
     def load(self, path):
         self.load_state_dict(torch.load(os.path.join(path, "rambo_reward_learn_pretrain.pth"), map_location=self.device))
@@ -124,6 +124,8 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
             "adv_dynamics_update/sl_loss_dynamics": 0,
             "adv_dynamics_update/reward_max": 0,
             "adv_dynamics_update/reward_min": 0,
+            "adv_update/adv_dynamics_loss": 0,
+            "adv_update/adv_reward_loss": 0,
         }
         # set in training model
         self.dynamics.model.train()
@@ -159,7 +161,12 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
                     # break
                 if steps == 1000:
                     break
-        
+        c_d, c_pi, c_eq = self.count
+        print(f"ratio of v_dataset > v_pi is {c_d / (c_d + c_pi)}")
+        print(f"number of larger v_dataset is {c_d}")
+        print(f"number of larger v_pi is {c_pi}")
+        print(f"number of tie is {c_eq}")
+        # count number of times when 
         self.dynamics.model.eval()
         self.reward.model.eval()
         return {_key: _value/steps for _key, _value in all_loss_info.items()}
@@ -251,6 +258,16 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         v_dataset = dataset_rewards.mean()
         v_pi_model = pi_rewards.mean()
         
+        # update counts
+        c_d, c_pi, c_eq = self.count
+        if v_dataset > v_pi_model:
+            c_d += 1
+        elif v_dataset < v_pi_model:
+            c_pi += 1
+        else:
+            c_eq += 1
+        self.count = (c_d, c_pi, c_eq)
+
         # normalize reward output to be similar in scale to advantages
         # v_dataset = (v_dataset - v_dataset.mean()) / (v_dataset.std() + 1e-6)
         # v_pi_model = (v_pi_model - v_pi_model.mean()) / (v_pi_model.std() + 1e-6)
@@ -296,6 +313,8 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
             "adv_reward_update/reward_bce_loss": sl_loss_reward.cpu().item(),
             "adv_update/v_pi": v_pi_model.cpu().item(), 
             "adv_update/v_dataset": v_dataset.cpu().item(), 
+            "adv_update/adv_dynamics_loss": adv_dynamics_loss.cpu().item(),
+            "adv_update/adv_reward_loss": adv_reward_loss.cpu().item(),
             "adv_dynamics_update/sl_loss_dynamics": sl_loss_dynamics.cpu().item(), 
             "adv_dynamics_update/reward_max": self.reward.model.max_reward.sum().cpu().item(),
             "adv_dynamics_update/reward_min": self.reward.model.min_reward.sum().cpu().item(),
