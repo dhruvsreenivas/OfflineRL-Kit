@@ -7,6 +7,19 @@ from offlinerlkit.modules.dynamics_module import Swish
 from offlinerlkit.nets import EnsembleLinear
 
 
+def soft_clamp(
+    x : torch.Tensor,
+    _min: Optional[torch.Tensor] = None,
+    _max: Optional[torch.Tensor] = None
+) -> torch.Tensor:
+    # clamp tensor values while mataining the gradient
+    if _max is not None:
+        x = _max - F.softplus(_max - x)
+    if _min is not None:
+        x = _min + F.softplus(x - _min)
+    return x
+
+
 class EnsembleRewardModel(nn.Module):
     """Ensemble of reward models. Uses EnsembleLinear layers provided in repository."""
     def __init__(
@@ -63,6 +76,16 @@ class EnsembleRewardModel(nn.Module):
         )
         self.reward_final_activation = reward_final_activation
         
+        # min and max logvar only matter in obs dim case (Gaussian)
+        self.register_parameter(
+            "max_reward",
+            nn.Parameter(torch.ones(1) * 1.0, requires_grad=True)
+        )
+        self.register_parameter(
+            "min_reward",
+            nn.Parameter(torch.ones(1) * -1.0, requires_grad=True)
+        )
+        
         # register elite parameters and move to device
         self.register_parameter(
             "elites",
@@ -89,7 +112,8 @@ class EnsembleRewardModel(nn.Module):
                 output = output * mask
         
         output = self.output_layer(output) # logits
-        
+        output = soft_clamp(output, self.min_reward, self.max_reward)
+
         if not available_mask:
             return output, masks
 

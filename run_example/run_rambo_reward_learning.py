@@ -65,7 +65,7 @@ def get_args():
     parser.add_argument("--adv-batch-size", type=int, default=256)
     parser.add_argument("--rollout-batch-size", type=int, default=50000)
     parser.add_argument("--rollout-length", type=int, default=5)
-    parser.add_argument("--adv-weight", type=float, default=3e-4)
+    parser.add_argument("--adv-weight", type=float, default=3e-6)
     parser.add_argument("--model-retain-epochs", type=int, default=5)
     parser.add_argument("--real-ratio", type=float, default=0.5)
     parser.add_argument("--load-dynamics-path", type=str, default=None)
