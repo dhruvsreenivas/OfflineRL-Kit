@@ -61,7 +61,7 @@ class PrefMBPolicyTrainer:
             
             # do sanity check here
             self.policy.eval()
-            self.policy.sanity_check(self.real_buffer)
+            self.policy.sanity_checking(self.real_buffer)
             exit()
 
             self.policy.train()
