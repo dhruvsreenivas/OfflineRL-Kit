@@ -161,12 +161,15 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
                     # break
                 if steps == 1000:
                     break
+        
+        # log counts
         c_d, c_pi, c_eq = self.count
         print(f"ratio of v_dataset > v_pi is {c_d / (c_d + c_pi)}")
         print(f"number of larger v_dataset is {c_d}")
         print(f"number of larger v_pi is {c_pi}")
         print(f"number of tie is {c_eq}")
-        # count number of times when 
+        
+        # go back to eval mode for rollout
         self.dynamics.model.eval()
         self.reward.model.eval()
         return {_key: _value/steps for _key, _value in all_loss_info.items()}
@@ -274,7 +277,8 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         
         # total adv loss
         adv_reward_loss = (1 / (1 - self._gamma + 1e-6)) * (v_pi_model - v_dataset)
-        adv_reward_loss += 0.001 * self.reward.model.max_reward.sum() - 0.001 * self.reward.model.min_reward.sum()
+        if self.reward.model.soft_clamp_output:
+            adv_reward_loss += 0.001 * self.reward.model.max_reward.sum() - 0.001 * self.reward.model.min_reward.sum()
         adv_loss = adv_dynamics_loss + adv_reward_loss
 
         # compute the supervised loss
@@ -304,7 +308,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         self._dynamics_adv_optim.step()
         self._reward_adv_optim.step()
 
-        return next_observations.cpu().numpy(), terminals, {
+        info_dict = {
             "adv_dynamics_update/all_loss": all_loss.cpu().item(), 
             "adv_dynamics_update/sl_loss": sl_loss.cpu().item(), 
             "adv_dynamics_update/adv_loss": adv_loss.cpu().item(), 
@@ -316,9 +320,15 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
             "adv_update/adv_dynamics_loss": adv_dynamics_loss.cpu().item(),
             "adv_update/adv_reward_loss": adv_reward_loss.cpu().item(),
             "adv_dynamics_update/sl_loss_dynamics": sl_loss_dynamics.cpu().item(), 
-            "adv_dynamics_update/reward_max": self.reward.model.max_reward.sum().cpu().item(),
-            "adv_dynamics_update/reward_min": self.reward.model.min_reward.sum().cpu().item(),
         }
+        
+        if self.reward.model.soft_clamp_output:
+            info_dict.update({
+                "adv_dynamics_update/reward_max": self.reward.model.max_reward.sum().cpu().item(),
+                "adv_dynamics_update/reward_min": self.reward.model.min_reward.sum().cpu().item()
+            })
+
+        return next_observations.cpu().numpy(), terminals, info_dict
         
     def reward_loss(self, preference_batch: Dict[str, torch.Tensor], normalize_input: bool = False) -> torch.Tensor:
         obs_dim, action_dim = preference_batch["observations1"].size(-1), preference_batch["actions1"].size(-1)
@@ -406,3 +416,39 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         # now learn on the real batch + fake batch
         batch = {"real": real_batch, "fake": fake_batch}
         return super().learn(batch)
+    
+    
+    # ====== debug functions ======
+    
+    
+    def sanity_checking(self, real_buffer):
+        all_info = real_buffer.sample_all()
+        all_obs, all_actions = all_info["observations"], all_info["actions"]
+        batch_size = 1000
+        reward_selected_indexes = self.reward.model.random_elite_idxs(batch_size)
+        
+        steps = 0
+        sum_v_dataset = []
+        sum_v_pi = []
+        while steps < int(np.ceil(all_obs.shape[0] / batch_size)):
+            obs = torch.from_numpy(all_obs[steps * batch_size : (steps + 1) * batch_size]).to(self.reward.model.device)
+            actions = torch.from_numpy(all_actions[steps * batch_size : (steps + 1) * batch_size]).to(self.reward.model.device)
+            
+            # dataset samples
+            v_batch = self.reward.model(obs, actions, train=False)
+            v_batch = v_batch[reward_selected_indexes, np.arange(obs.shape[0])]
+            sum_v_dataset.append(v_batch.cpu().numpy())
+
+            # policy selection
+            v_pi_batch = self.reward.model(obs, super().select_action(obs, deterministic=True), train=False)
+            v_pi_batch = v_pi_batch[reward_selected_indexes, np.arange(obs.shape[0])]
+            sum_v_pi.append(v_pi_batch.cpu().numpy())
+            
+            steps += 1
+        
+        sum_v_dataset = np.concatenate(sum_v_dataset)
+        sum_v_pi = np.concatenate(sum_v_pi)
+        
+        print(f"avg difference (v_dataset - v_pi): {np.mean(sum_v_dataset - sum_v_pi)}")
+        print(f"fraction of times the dataset reward is bigger than the policy reward: {(sum_v_dataset > sum_v_pi).astype(np.float32).mean()}")
+        print(f"fraction of times the policy reward is bigger than the dataset reward: {(sum_v_pi > sum_v_dataset).astype(np.float32).mean()}")

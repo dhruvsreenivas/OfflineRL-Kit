@@ -58,6 +58,11 @@ class PrefMBPolicyTrainer:
         
         # train loop
         for e in range(1, self._epoch + 1):
+            
+            # do sanity check here
+            self.policy.eval()
+            self.policy.sanity_check(self.real_buffer)
+            exit()
 
             self.policy.train()
 

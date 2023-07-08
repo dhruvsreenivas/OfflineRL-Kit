@@ -33,6 +33,7 @@ class EnsembleRewardModel(nn.Module):
         with_action: bool = True,
         weight_decays: Optional[Union[List[float], Tuple[float]]] = None,
         dropout_probs: Union[List[float], Tuple[float]] = None,
+        soft_clamp_output: bool = False,
         reward_final_activation: str = 'none',
         device: str = "cpu"
     ) -> None:
@@ -77,14 +78,16 @@ class EnsembleRewardModel(nn.Module):
         self.reward_final_activation = reward_final_activation
         
         # min and max logvar only matter in obs dim case (Gaussian)
-        self.register_parameter(
-            "max_reward",
-            nn.Parameter(torch.ones(1) * 1.0, requires_grad=True)
-        )
-        self.register_parameter(
-            "min_reward",
-            nn.Parameter(torch.ones(1) * -1.0, requires_grad=True)
-        )
+        self.soft_clamp_output = soft_clamp_output
+        if soft_clamp_output:
+            self.register_parameter(
+                "max_reward",
+                nn.Parameter(torch.ones(1) * 1.0, requires_grad=True)
+            )
+            self.register_parameter(
+                "min_reward",
+                nn.Parameter(torch.ones(1) * -1.0, requires_grad=True)
+            )
         
         # register elite parameters and move to device
         self.register_parameter(
@@ -112,7 +115,8 @@ class EnsembleRewardModel(nn.Module):
                 output = output * mask
         
         output = self.output_layer(output) # logits
-        output = soft_clamp(output, self.min_reward, self.max_reward)
+        if self.soft_clamp_output:
+            output = soft_clamp(output, self.min_reward, self.max_reward)
 
         if not available_mask:
             return output, masks

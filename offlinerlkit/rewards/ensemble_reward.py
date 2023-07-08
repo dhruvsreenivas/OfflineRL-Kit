@@ -61,9 +61,9 @@ class EnsembleReward(BaseReward):
         
         # normalize if necessary over the batch
         if self._normalize_reward_eval:
-            rew_mean = np.mean(rewards, axis=0, keepdims=True)
+            # only normalize std like OpenAI paper
             rew_std = np.std(rewards, axis=0, keepdims=True)
-            rewards = (rewards - rew_mean) / (rew_std + 1e-8)
+            rewards = rewards / (rew_std + 1e-8)
         
         info = {}
         if self._penalty_coef:
