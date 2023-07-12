@@ -102,6 +102,8 @@ class RAMBOPolicy(MOPOPolicy):
             "adv_dynamics_update/adv_loss": 0, 
             "adv_dynamics_update/adv_advantage": 0, 
             "adv_dynamics_update/adv_log_prob": 0, 
+            "adv_dynamics_update/v_pi": 0,
+            "adv_dynamics_update/v_dataset": 0,
         }
         self.dynamics.model.train()
         steps = 0
@@ -193,6 +195,9 @@ class RAMBOPolicy(MOPOPolicy):
         sl_loss = sl_loss + self.dynamics.model.get_decay_loss()
         sl_loss = sl_loss + 0.001 * self.dynamics.model.max_logvar.sum() - 0.001 * self.dynamics.model.min_logvar.sum()
 
+        v_pi = rewards.mean() # (batch_size, 1)
+        v_dataset = sl_mean[:, -1].mean() # (ensemble_size, batch_size, 18)
+       
         all_loss = self._adv_weight * adv_loss + sl_loss
         self._dynmics_adv_optim.zero_grad()
         all_loss.backward()
@@ -204,6 +209,8 @@ class RAMBOPolicy(MOPOPolicy):
             "adv_dynamics_update/adv_loss": adv_loss.cpu().item(), 
             "adv_dynamics_update/adv_advantage": advantage.mean().cpu().item(), 
             "adv_dynamics_update/adv_log_prob": log_prob.mean().cpu().item(), 
+            "adv_dynamics_update/v_pi": v_pi.cpu().item(), 
+            "adv_dynamics_update/v_dataset": v_dataset.cpu().item(), 
         }
 
     def rollout(

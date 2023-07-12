@@ -163,11 +163,11 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
                     break
         
         # log counts
-        c_d, c_pi, c_eq = self.count
-        print(f"ratio of v_dataset > v_pi is {c_d / (c_d + c_pi)}")
-        print(f"number of larger v_dataset is {c_d}")
-        print(f"number of larger v_pi is {c_pi}")
-        print(f"number of tie is {c_eq}")
+        # c_d, c_pi, c_eq = self.count
+        # print(f"ratio of v_dataset > v_pi is {c_d / (c_d + c_pi)}")
+        # print(f"number of larger v_dataset is {c_d}")
+        # print(f"number of larger v_pi is {c_pi}")
+        # print(f"number of tie is {c_eq}")
         
         # go back to eval mode for rollout
         self.dynamics.model.eval()
@@ -262,14 +262,14 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         v_pi_model = pi_rewards.mean()
         
         # update counts
-        c_d, c_pi, c_eq = self.count
-        if v_dataset > v_pi_model:
-            c_d += 1
-        elif v_dataset < v_pi_model:
-            c_pi += 1
-        else:
-            c_eq += 1
-        self.count = (c_d, c_pi, c_eq)
+        # c_d, c_pi, c_eq = self.count
+        # if v_dataset > v_pi_model:
+        #     c_d += 1
+        # elif v_dataset < v_pi_model:
+        #     c_pi += 1
+        # else:
+        #     c_eq += 1
+        # self.count = (c_d, c_pi, c_eq)
 
         # normalize reward output to be similar in scale to advantages
         # v_dataset = (v_dataset - v_dataset.mean()) / (v_dataset.std() + 1e-6)

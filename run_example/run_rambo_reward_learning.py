@@ -87,7 +87,7 @@ def get_args():
     parser.add_argument("--reward-hidden-dims", type=int, nargs='*', default=[200, 200, 200, 200])
     parser.add_argument("--reward-dropout-probs", type=float, nargs='*', default=[0.0, 0.0, 0.0, 0.0])
     parser.add_argument("--reward-weight-decay", type=float, nargs='*', default=[0.0, 0.0, 0.0, 0.0, 0.0])
-    parser.add_argument("--reward-lr", type=float, default=3e-4)
+    parser.add_argument("--reward-lr", type=float, default=3e-5)
     parser.add_argument("--n-reward_models", type=int, default=7)
     parser.add_argument("--n-reward-elites", type=int, default=5)
     parser.add_argument("--reward-with-action", type=bool, default=True)
