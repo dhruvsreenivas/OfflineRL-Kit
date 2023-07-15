@@ -108,7 +108,7 @@ class EnsembleDynamics(BaseDynamics):
             
         # if we want to normalize, normalize to have zero mean and standard deviation 1 -- rewards have shape (num_elites, batch_size, 1)
         # see https://arxiv.org/pdf/1706.03741.pdf section 2.2.1 for this
-        if reward and normalize_reward:
+        if reward is not None and normalize_reward:
             # mean / standard deviation over batch only -- no need to do over ensemble
             reward = (reward - reward.mean(axis=1, keepdims=True)) / (reward.std(axis=1, keepdims=True) + 1e-8)
         
