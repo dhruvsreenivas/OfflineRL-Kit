@@ -305,7 +305,9 @@ def train(args=get_args()):
     validate_reward_model(reward, pref_dataset)
     
     # relabel all rewards in the dataset
-    for i in range(real_buffer._size):
+    print('## relabeling reward ##')
+    from tqdm import tqdm
+    for i in tqdm(range(real_buffer._size)):
         obs = np.expand_dims(real_buffer.observations[i], 0) # (1, obs_dim)
         action = np.expand_dims(real_buffer.actions[i], 0) # (1, action_dim)
         rewards = reward.get_reward(obs, action) # (1, 1)
