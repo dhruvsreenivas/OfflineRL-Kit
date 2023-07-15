@@ -93,6 +93,7 @@ def get_args():
     parser.add_argument("--use-reward-scaler", action='store_true', help='whether to use dynamics scaler for reward learning or not')
     parser.add_argument("--reward-uncertainty-mode", type=str, default="aleatoric")
     parser.add_argument("--reward-final-activation", type=str, default="none")
+    parser.add_argument("--normalize-relabeled-reward", type=bool, default=False)
 
     return parser.parse_args()
 
@@ -263,7 +264,7 @@ def train(args=get_args()):
     # create reward model and train 
     reward_model = EnsembleRewardModel(
         obs_dim=np.prod(args.obs_shape),
-        action_dim=args.action_dim,
+        action_dim=int(args.action_dim),
         hidden_dims=args.reward_hidden_dims,
         num_ensemble=args.n_ensemble,
         num_elites=args.n_elites,
@@ -281,8 +282,8 @@ def train(args=get_args()):
         reward_model,
         reward_optim,
         dynamics.scaler if args.use_reward_scaler else None,
-        args.reward_penalty_coef,
-        args.reward_uncertainty_mode
+        penalty_coef=args.reward_penalty_coef,
+        uncertainty_mode=args.reward_uncertainty_mode
     )
     
     # create preference dataset
@@ -313,6 +314,13 @@ def train(args=get_args()):
         # print(f"{obs.shape}, {action.shape}, {rewards.shape}")
         
         real_buffer.rewards[i] = rewards.squeeze()
+        
+    # normalize relabeled reward if need be
+    if args.normalize_relabeled_reward:
+        rew_mean = np.mean(real_buffer.rewards, axis=0, keepdims=True)
+        rew_std = np.std(real_buffer.rewards, axis=0, keepdims=True)
+        
+        real_buffer.rewards = (real_buffer.rewards - rew_mean) / (rew_std + 1e-8)
 
     # train
     if args.load_bc_path:
