@@ -472,6 +472,106 @@ class TrajectoryBuffer:
         # set as class variable
         self.snippet_preference_dataset = offline_dataset
         
+    def generate_snippet_fixed_preference_dataset(self, name: str, sample_label: bool = True) -> None:
+        '''
+        Like generate_sniped_preference_dataset except it will always get snipets of length self.segment_length
+        All trajs with length smaller than that are ignored. 
+        '''
+        
+        num_pairs = int(self.size) // self.segment_length
+        
+        datapoints = []
+
+        #Grab indices of trajs that are >= seg length
+        indices = (np.array(self.traj_lengths)>=self.segment_length).nonzero()[0]        
+        for _ in range(num_pairs):
+            # sample a pair of trajectories
+            traj_idx1 = np.random.choice(indices)
+            traj_idx2 = np.random.choice(indices)
+            
+            # sample snippets from each trajectory
+            start_idx1 = np.random.randint(0, self.traj_lengths[traj_idx1] - self.segment_length) if self.traj_lengths[traj_idx1] > self.segment_length else 0
+            start_idx2 = np.random.randint(0, self.traj_lengths[traj_idx2] - self.segment_length) if self.traj_lengths[traj_idx2] > self.segment_length else 0
+            
+            snip1 = {
+                k: v[traj_idx1][start_idx1 : start_idx1 + self.segment_length]
+                for k, v in self.trajs.items()
+            }
+            snip2 = {
+                k: v[traj_idx2][start_idx2 : start_idx2 + self.segment_length]
+                for k, v in self.trajs.items()
+            }
+            
+            # get label based off of BTL model of reward
+            rew1 = np.sum(snip1["rewards"])
+            rew2 = np.sum(snip2["rewards"])
+            if sample_label:
+                diff = torch.sigmoid(torch.tensor(rew1 - rew2))
+                label = torch.bernoulli(diff) # this is the label -> 0 if 1 < 2, 1 if not
+            else:
+                label = torch.tensor(rew1 > rew2).float()
+            
+            datapoints.append((snip1, snip2, label))
+        
+        offline_dataset = PreferenceDataset(datapoints, self.device)
+        
+        # save dataset somewhere for future reference so we can load this as fixed later
+        torch.save(offline_dataset, f"/home/awt46/OfflineRL-Kit/offline_data/{name}_snippet_preference_dataset_seglen{self.segment_length}_{'deterministic' if not sample_label else ''}.pt")
+        
+        # set as class variable
+        self.snippet_preference_dataset = offline_dataset
+
+    def generate_snippet_range_preference_dataset(self, name: str, min_length: int, max_length: int, sample_label: bool = True) -> None:
+        # if there is something hella small in the dataset (smaller than segment length), then we use that
+        num_pairs = int(self.size // ((min_length+max_length)/2))
+        
+        datapoints = []
+        for _ in range(num_pairs):
+            segment_length = np.random.randint(min_length, max_length)
+            # sample a pair of trajectories. There definitely is a much more efficient way to do this but on average I think the while loops will only execute 1-2 times. 
+            traj_idx1 = np.random.randint(0, self.num_trajs)
+            while(self.traj_lengths[traj_idx1]<segment_length):
+                traj_idx1 = np.random.randint(0, self.num_trajs)
+
+            traj_idx2 = np.random.randint(0, self.num_trajs)
+            while(self.traj_lengths[traj_idx2]<segment_length):
+                traj_idx2 = np.random.randint(0, self.num_trajs)
+
+
+
+            
+            # sample snippets from each trajectory
+            start_idx1 = np.random.randint(0, self.traj_lengths[traj_idx1] - segment_length) if self.traj_lengths[traj_idx1] > segment_length else 0
+            start_idx2 = np.random.randint(0, self.traj_lengths[traj_idx2] - segment_length) if self.traj_lengths[traj_idx2] > segment_length else 0
+            
+            snip1 = {
+                k: v[traj_idx1][start_idx1 : start_idx1 + segment_length]
+                for k, v in self.trajs.items()
+            }
+            snip2 = {
+                k: v[traj_idx2][start_idx2 : start_idx2 + segment_length]
+                for k, v in self.trajs.items()
+            }
+            
+            # get label based off of BTL model of reward
+            rew1 = np.sum(snip1["rewards"])
+            rew2 = np.sum(snip2["rewards"])
+            if sample_label:
+                diff = torch.sigmoid(torch.tensor(rew1 - rew2))
+                label = torch.bernoulli(diff) # this is the label -> 0 if 1 < 2, 1 if not
+            else:
+                label = torch.tensor(rew1 > rew2).float()
+            
+            datapoints.append((snip1, snip2, label))
+        
+        offline_dataset = PreferenceDataset(datapoints, self.device)
+        
+        # save dataset somewhere for future reference so we can load this as fixed later
+        torch.save(offline_dataset, f"/home/awt46/OfflineRL-Kit/offline_data/{name}_snippet_preference_dataset_seglen_range_{min_length}_{max_length}_{'deterministic' if not sample_label else ''}.pt")
+        
+        # set as class variable
+        self.snippet_preference_dataset = offline_dataset
+
     def load_snippet_preference_dataset(self, path: str) -> None:
         dataset = torch.load(path, map_location=self.device)
         self.snippet_preference_dataset = dataset
