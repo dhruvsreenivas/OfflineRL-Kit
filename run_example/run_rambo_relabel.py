@@ -1,6 +1,5 @@
 import argparse
 import random
-import copy
 
 import gym
 import d4rl
@@ -244,7 +243,7 @@ def train(args=get_args()):
         "tb": "tensorboard"
     }
     logger = Logger(log_dirs, output_config)
-    logger.log_hyperparameters(copy.deepcopy(vars(args)))
+    logger.log_hyperparameters((vars(args))
 
     # create policy trainer
     policy_trainer = MBPolicyTrainer(
