@@ -227,7 +227,7 @@ class RAMBOPolicy(MOPOPolicy):
         observations = init_obss
         for _ in range(rollout_length):
             actions = super().select_action(observations)
-            next_observations, rewards, terminals, info = self.dynamics.step(observations, actions)
+            next_observations, rewards, terminals, info = self.dynamics.step(observations, actions, normalize_reward=False)
             rollout_transitions["obss"].append(observations)
             rollout_transitions["next_obss"].append(next_observations)
             rollout_transitions["actions"].append(actions)
