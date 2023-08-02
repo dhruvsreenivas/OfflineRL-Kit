@@ -93,11 +93,11 @@ class EnsembleDynamicsModel(nn.Module):
             )
             self.register_parameter(
                 "max_logvar",
-                nn.Parameter(torch.ones(obs_dim + self._with_reward) * 0.5, requires_grad=fix_logvar_range)
+                nn.Parameter(torch.ones(obs_dim + self._with_reward) * 0.5, requires_grad=not fix_logvar_range)
             )
             self.register_parameter(
                 "min_logvar",
-                nn.Parameter(torch.ones(obs_dim + self._with_reward) * -10, requires_grad=fix_logvar_range)
+                nn.Parameter(torch.ones(obs_dim + self._with_reward) * -10, requires_grad=not fix_logvar_range)
             )
 
         self.register_parameter(
