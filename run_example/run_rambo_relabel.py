@@ -37,7 +37,7 @@ walker2d-medium-expert-v2: rollout-length=2, adv-weight=3e-4
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--netid", type=str, default="ds844")
+    parser.add_argument("--netid", type=str, default="qy253")
     parser.add_argument("--algo-name", type=str, default="rambo_relabeled")
     parser.add_argument("--task", type=str, default="hopper-medium-expert-v2")
     parser.add_argument("--seed", type=int, default=0)
@@ -95,6 +95,8 @@ def get_args():
     parser.add_argument("--reward-final-activation", type=str, default="none")
     parser.add_argument("--normalize-relabeled-reward", type=bool, default=False)
 
+    parser.add_argument("--load-std-path", type=str, default=None) # load dynamics std path (for ant env)
+    parser.add_argument("--fix-logvar-range", type=bool, default=False) # fixed min and max logvar for dynamics
     return parser.parse_args()
 
 
@@ -183,7 +185,14 @@ def train(args=get_args()):
         action_dtype=np.float32,
         device=args.device
     )
-    
+
+    if args.load_std_path is not None:
+        fix_std = torch.load(args.load_std_path)
+        fix_std = torch.clamp(fix_std, 1e-5)
+        fix_logvar = torch.log(torch.pow(fix_std, 2))
+    else:
+        fix_logvar = None
+
     # create dynamics
     dynamics_model = EnsembleDynamicsModel(
         obs_dim=np.prod(args.obs_shape),
@@ -192,7 +201,9 @@ def train(args=get_args()):
         num_ensemble=args.n_ensemble,
         num_elites=args.n_elites,
         weight_decays=args.dynamics_weight_decay,
-        device=args.device
+        device=args.device,
+        fix_logvar=fix_logvar,
+        fix_logvar_range=args.fix_logvar_range
     )
     dynamics_optim = torch.optim.Adam(
         dynamics_model.parameters(),
@@ -293,13 +304,16 @@ def train(args=get_args()):
     pref_dataset.device = args.device
     
     # train reward
-    reward.train(
-        pref_dataset,
-        logger,
-        holdout_ratio=0.1,
-        max_epochs_since_update=10,
-        batch_size=args.reward_batch_size
-    )
+    if args.load_reward_path:
+        reward.load(args.load_reward_path)
+    else:
+        reward.train(
+            pref_dataset,
+            logger,
+            holdout_ratio=0.1,
+            max_epochs_since_update=10,
+            batch_size=args.reward_batch_size
+        )
     
     # validate reward
     validate_reward_model(reward, pref_dataset)
