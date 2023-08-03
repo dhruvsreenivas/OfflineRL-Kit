@@ -432,6 +432,7 @@ class TrajectoryBuffer:
     def generate_snippet_preference_dataset(self, name: str, sample_label: bool = True) -> None:
         # if there is something hella small in the dataset (smaller than segment length), then we use that
         self.segment_length = min(self.segment_length, min(self.traj_lengths))
+        print(f"segment length: {self.segment_length}")
         num_pairs = int(self.size) // self.segment_length
         
         datapoints = []
@@ -483,7 +484,7 @@ class TrajectoryBuffer:
         datapoints = []
 
         #Grab indices of trajs that are >= seg length
-        indices = (np.array(self.traj_lengths)>=self.segment_length).nonzero()[0]        
+        indices = (np.array(self.traj_lengths) >= self.segment_length).nonzero()[0]        
         for _ in range(num_pairs):
             # sample a pair of trajectories
             traj_idx1 = np.random.choice(indices)
@@ -516,7 +517,7 @@ class TrajectoryBuffer:
         offline_dataset = PreferenceDataset(datapoints, self.device)
         
         # save dataset somewhere for future reference so we can load this as fixed later
-        torch.save(offline_dataset, f"/home/awt46/OfflineRL-Kit/offline_data/{name}_snippet_preference_dataset_seglen{self.segment_length}_{'deterministic' if not sample_label else ''}.pt")
+        torch.save(offline_dataset, f"/home/ds844/OfflineRL-Kit/offline_data/{name}_snippet_preference_dataset_seglen{self.segment_length}_{'deterministic' if not sample_label else ''}.pt")
         
         # set as class variable
         self.snippet_preference_dataset = offline_dataset
