@@ -9,12 +9,11 @@ import torch
 
 
 from offlinerlkit.nets import MLP
-from offlinerlkit.modules import ActorProb, Critic, TanhDiagGaussian, EnsembleDynamicsModel, EnsembleRewardModel
+from offlinerlkit.modules import ActorProb, Critic, TanhDiagGaussian, EnsembleDynamicsModel
 from offlinerlkit.dynamics import EnsembleDynamics
-from offlinerlkit.rewards import EnsembleReward
 from offlinerlkit.utils.scaler import StandardScaler
 from offlinerlkit.utils.termination_fns import get_termination_fn, obs_unnormalization
-from offlinerlkit.buffer import ReplayBuffer, PreferenceDataset
+from offlinerlkit.buffer import ReplayBuffer
 from offlinerlkit.utils.logger import Logger, make_log_dirs
 from offlinerlkit.policy_trainer import MBPolicyTrainer
 from offlinerlkit.policy import RAMBOPolicy
@@ -37,8 +36,7 @@ walker2d-medium-expert-v2: rollout-length=2, adv-weight=3e-4
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--netid", type=str, default="qy253")
-    parser.add_argument("--algo-name", type=str, default="rambo_relabeled")
+    parser.add_argument("--algo-name", type=str, default="rambo")
     parser.add_argument("--task", type=str, default="hopper-medium-expert-v2")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--actor-lr", type=float, default=1e-4)
@@ -79,45 +77,10 @@ def get_args():
     parser.add_argument("--bc-epoch", type=int, default=50)
     parser.add_argument("--bc-batch-size", type=int, default=256)
     
-    # reward learning args
-    parser.add_argument("--reward-hidden-dims", type=int, nargs='*', default=[200, 200, 200, 200])
-    parser.add_argument("--reward-dropout-probs", type=float, nargs='*', default=[0.0, 0.0, 0.0, 0.0])
-    parser.add_argument("--reward-weight-decay", type=float, nargs='*', default=[0.0, 0.0, 0.0, 0.0, 0.0])
-    parser.add_argument("--reward-lr", type=float, default=3e-4)
-    parser.add_argument("--n-reward_models", type=int, default=7)
-    parser.add_argument("--n-reward-elites", type=int, default=5)
-    parser.add_argument("--reward-with-action", action="store_true")
-    parser.add_argument("--segment-length", type=int, default=15)
-    parser.add_argument("--reward-penalty-coef", type=float, default=0.0)
-    parser.add_argument("--reward_batch_size", type=int, default=256)
-    parser.add_argument("--use-reward-scaler", action='store_true', help='whether to use dynamics scaler for reward learning or not')
-    parser.add_argument("--reward-uncertainty-mode", type=str, default="aleatoric")
-    parser.add_argument("--reward-final-activation", type=str, default="none")
-    parser.add_argument("--normalize-relabeled-reward", type=bool, default=False)
-
     parser.add_argument("--load-std-path", type=str, default=None) # load dynamics std path (for ant env)
-    parser.add_argument("--fix-logvar-range", type=bool, default=False) # fixed min and max logvar for dynamics
-    return parser.parse_args()
-
-
-@torch.no_grad()
-def validate_reward_model(ensemble: EnsembleReward, dataset: PreferenceDataset) -> None:
-    num_correct = 0
-    for i in range(len(dataset)):
-        dp = dataset[i]
-        
-        # just look at the elite models
-        r1 = ensemble.get_reward(dp["observations1"].cpu().numpy(), dp["actions1"].cpu().numpy()).sum()
-        r2 = ensemble.get_reward(dp["observations2"].cpu().numpy(), dp["actions2"].cpu().numpy()).sum()
-        if np.isnan(r1).any() or np.isnan(r2).any():
-            print("Hit a NaN, breaking out...")
-            break
-        
-        lbl = dp["label"]
-        if (r1 > r2 and lbl.item() == 1.0) or (r1 < r2 and lbl.item() == 0.0):
-            num_correct += 1
+    parser.add_argument("--fix-logvar-range", type=bool, default=True) # fixed min and max logvar for dynamics
     
-    print(f"****** fraction of predictions which are correct: {num_correct / len(dataset)} ******")
+    return parser.parse_args()
 
 
 def train(args=get_args()):
@@ -185,7 +148,7 @@ def train(args=get_args()):
         action_dtype=np.float32,
         device=args.device
     )
-
+    
     if args.load_std_path is not None:
         fix_std = torch.load(args.load_std_path)
         fix_std = torch.clamp(fix_std, 1e-5)
@@ -203,7 +166,7 @@ def train(args=get_args()):
         weight_decays=args.dynamics_weight_decay,
         device=args.device,
         fix_logvar=fix_logvar,
-        fix_logvar_range=args.fix_logvar_range
+        fix_logvar_range=args.fix_logvar_range,
     )
     dynamics_optim = torch.optim.Adam(
         dynamics_model.parameters(),
@@ -271,71 +234,6 @@ def train(args=get_args()):
         real_ratio=args.real_ratio,
         eval_episodes=args.eval_episodes
     )
-    
-    # create reward model and train 
-    reward_model = EnsembleRewardModel(
-        obs_dim=np.prod(args.obs_shape),
-        action_dim=int(args.action_dim),
-        hidden_dims=args.reward_hidden_dims,
-        num_ensemble=args.n_ensemble,
-        num_elites=args.n_elites,
-        with_action=args.reward_with_action,
-        weight_decays=args.reward_weight_decay,
-        dropout_probs=args.reward_dropout_probs,
-        reward_final_activation=args.reward_final_activation,
-        device=args.device
-    )
-    reward_optim = torch.optim.Adam(
-        reward_model.parameters(),
-        lr=args.reward_lr
-    )
-    reward = EnsembleReward(
-        reward_model,
-        reward_optim,
-        dynamics.scaler if args.use_reward_scaler else None,
-        penalty_coef=args.reward_penalty_coef,
-        uncertainty_mode=args.reward_uncertainty_mode
-    )
-    
-    # create preference dataset
-    dataset_path = f"/home/{args.netid}/OfflineRL-Kit/offline_data/{args.task}_snippet_preference_dataset_seglen{args.segment_length}_deterministic.pt"
-    pref_dataset = torch.load(dataset_path)
-    pref_dataset.normalize_obs(obs_mean, obs_std)
-    pref_dataset.device = args.device
-    
-    # train reward
-    if args.load_reward_path:
-        reward.load(args.load_reward_path)
-    else:
-        reward.train(
-            pref_dataset,
-            logger,
-            holdout_ratio=0.1,
-            max_epochs_since_update=10,
-            batch_size=args.reward_batch_size
-        )
-    
-    # validate reward
-    validate_reward_model(reward, pref_dataset)
-    
-    # relabel all rewards in the dataset
-    from tqdm import trange
-    for i in trange(real_buffer._size, desc="reward relabeling"):
-        obs = np.expand_dims(real_buffer.observations[i], 0) # (1, obs_dim)
-        action = np.expand_dims(real_buffer.actions[i], 0) # (1, action_dim)
-        rewards = reward.get_reward(obs, action) # (1, 1)
-        
-        # print shapes to debug
-        # print(f"{obs.shape}, {action.shape}, {rewards.shape}")
-        
-        real_buffer.rewards[i] = rewards.squeeze()
-        
-    # normalize relabeled reward if need be
-    if args.normalize_relabeled_reward:
-        rew_mean = np.mean(real_buffer.rewards, axis=0, keepdims=True)
-        rew_std = np.std(real_buffer.rewards, axis=0, keepdims=True)
-        
-        real_buffer.rewards = (real_buffer.rewards - rew_mean) / (rew_std + 1e-8)
 
     # train
     if args.load_bc_path:

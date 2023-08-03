@@ -106,6 +106,8 @@ def get_args():
     parser.add_argument("--use-reward-scaler", type=bool, default=True, help='whether to use dynamics scaler for reward learning or not')
     parser.add_argument("--pred-discounted-return", type=bool, default=False, help='whether to predict discounted return as opposed to full return.')
 
+    parser.add_argument("--load-std-path", type=str, default=None) # load dynamics std path (for ant env)
+    parser.add_argument("--fix-logvar-range", type=bool, default=False) # fixed min and max logvar for dynamics
     return parser.parse_args()
 
 
@@ -201,7 +203,14 @@ def train(args=get_args()):
     pref_dataset = torch.load(dataset_path)
     pref_dataset.normalize_obs(obs_mean, obs_std) # normalize everything, same scale as regular replay buffer
     pref_dataset.device = args.device
-    
+
+    if args.load_std_path is not None:
+        fix_std = torch.load(args.load_std_path)
+        fix_std = torch.clamp(fix_std, 1e-5)
+        fix_logvar = torch.log(torch.pow(fix_std, 2))
+    else:
+        fix_logvar = None
+
     # create dynamics
     dynamics_model = EnsembleDynamicsModel(
         obs_dim=np.prod(args.obs_shape),
@@ -212,7 +221,9 @@ def train(args=get_args()):
         weight_decays=args.dynamics_weight_decay,
         with_reward=False,
         dropout_probs=args.dynamics_dropout_probs,
-        device=args.device
+        device=args.device,
+        fix_logvar=fix_logvar,
+        fix_logvar_range=args.fix_logvar_range,
     )
     dynamics_optim = torch.optim.Adam(
         dynamics_model.parameters(),

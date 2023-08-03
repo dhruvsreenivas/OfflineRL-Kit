@@ -40,7 +40,9 @@ class EnsembleDynamicsModel(nn.Module):
         weight_decays: Optional[Union[List[float], Tuple[float]]] = None,
         with_reward: bool = True,
         dropout_probs: Optional[Union[List[float], Tuple[float]]] = None,
-        device: str = "cpu"
+        device: str = "cpu",
+        fix_logvar = None,
+        fix_logvar_range = False,
     ) -> None:
         super().__init__()
 
@@ -74,22 +76,29 @@ class EnsembleDynamicsModel(nn.Module):
         
         self.backbones = nn.ModuleList(module_list)
         self.masks = masks
-
-        self.output_layer = EnsembleLinear(
-            hidden_dims[-1],
-            2 * (obs_dim + self._with_reward),
-            num_ensemble,
-            weight_decays[-1]
-        )
-
-        self.register_parameter(
-            "max_logvar",
-            nn.Parameter(torch.ones(obs_dim + self._with_reward) * 0.5, requires_grad=True)
-        )
-        self.register_parameter(
-            "min_logvar",
-            nn.Parameter(torch.ones(obs_dim + self._with_reward) * -10, requires_grad=True)
-        )
+        self.fix_logvar = fix_logvar
+        if self.fix_logvar is not None:
+            self.output_layer = EnsembleLinear(
+                hidden_dims[-1],
+                obs_dim + self._with_reward,
+                num_ensemble,
+                weight_decays[-1]
+            )
+        else:
+            self.output_layer = EnsembleLinear(
+                hidden_dims[-1],
+                2 * (obs_dim + self._with_reward),
+                num_ensemble,
+                weight_decays[-1]
+            )
+            self.register_parameter(
+                "max_logvar",
+                nn.Parameter(torch.ones(obs_dim + self._with_reward) * 0.5, requires_grad=not fix_logvar_range)
+            )
+            self.register_parameter(
+                "min_logvar",
+                nn.Parameter(torch.ones(obs_dim + self._with_reward) * -10, requires_grad=not fix_logvar_range)
+            )
 
         self.register_parameter(
             "elites",
@@ -114,8 +123,14 @@ class EnsembleDynamicsModel(nn.Module):
             
             count += 1
         
-        mean, logvar = torch.chunk(self.output_layer(output), 2, dim=-1)
-        logvar = soft_clamp(logvar, self.min_logvar, self.max_logvar)
+        if self.fix_logvar is None:
+            mean, logvar = torch.chunk(self.output_layer(output), 2, dim=-1)
+            logvar = soft_clamp(logvar, self.min_logvar, self.max_logvar)
+        else:
+            mean = self.output_layer(output)
+            with torch.no_grad():
+                logvar = self.fix_logvar
+                logvar = logvar.unsqueeze(0).unsqueeze(0).repeat(mean.shape[0], mean.shape[1], 1)
         return mean, logvar
 
     def load_save(self) -> None:
