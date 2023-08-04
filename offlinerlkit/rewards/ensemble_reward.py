@@ -22,7 +22,7 @@ class EnsembleReward(BaseReward):
         normalize_reward_eval: bool = False,
         gamma: float = 1.0,
         penalty_coef: float = 0.0,
-        uncertainty_mode: str = "aleatoric"
+        uncertainty_mode: str = "aleatoric",
     ) -> None:
         super().__init__(model, optim)
         
@@ -191,16 +191,9 @@ class EnsembleReward(BaseReward):
             # compute rewards and sum for trajectories
             ensemble_pred_rew1, masks = self.model(obs1, act1, train=True) # size (n_ensemble, batch_size, seg_len, 1)
             ensemble_pred_rew2 = self.model(obs2, act2, masks=masks, train=True) # size (n_ensemble, batch_size, seg_len, 1)
-            # print(f"are any of these rewards nans: {torch.isnan(ensemble_pred_rew1).any().item(), torch.isnan(ensemble_pred_rew2).any().item()}")
             
-            # discount if necessary (gamma = 1.0 prevents any discounting, which is default)
-            discount1 = (self._gamma ** torch.arange(ensemble_pred_rew1.size(2))).unsqueeze(0).unsqueeze(0).unsqueeze(-1).to(ensemble_pred_rew1.device) # (1, 1, seg_len, 1)
-            discount2 = (self._gamma ** torch.arange(ensemble_pred_rew2.size(2))).unsqueeze(0).unsqueeze(0).unsqueeze(-1).to(ensemble_pred_rew2.device) # (1, 1, seg_len, 1)
-            ensemble_pred_rew1 = ensemble_pred_rew1 * discount1
-            ensemble_pred_rew2 = ensemble_pred_rew2 * discount2
-            
-            ensemble_pred_rew1 = ensemble_pred_rew1.sum(2) # (n_ensemble, batch_size, 1), sum(\hat{r}(\tau1)) -> logits
-            ensemble_pred_rew2 = ensemble_pred_rew2.sum(2) # (n_ensemble, batch_size, 1), sum(\hat{r}(\tau2)) -> logits
+            ensemble_pred_rew1 = self.get_return(ensemble_pred_rew1) # (n_ensemble, batch_size, segment_length, 1), sum(\hat{r}(\tau1)) -> logits
+            ensemble_pred_rew2 = self.get_return(ensemble_pred_rew2) # (n_ensemble, batch_size, segment_length, 1), sum(\hat{r}(\tau2)) -> logits
             
             # get stacked logits before throwing to cross entropy loss
             ensemble_pred_rew = torch.cat([ensemble_pred_rew1, ensemble_pred_rew2], dim=-1) # (n_ensemble, batch_size, 2)
@@ -250,8 +243,8 @@ class EnsembleReward(BaseReward):
             ensemble_pred_rew1, _ = self.model(obs1, act1, train=False) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
             ensemble_pred_rew2, _ = self.model(obs2, act2, train=False) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
             
-            ensemble_pred_rew1 = ensemble_pred_rew1.sum(2) # (n_ensemble, batch_size), sum(\hat{r}(\tau1)) -> logits
-            ensemble_pred_rew2 = ensemble_pred_rew2.sum(2) # (n_ensemble, batch_size), sum(\hat{r}(\tau2)) -> logits
+            ensemble_pred_rew1 = self.get_return(ensemble_pred_rew1) # (n_ensemble, batch_size), sum(\hat{r}(\tau1)) -> logits
+            ensemble_pred_rew2 = self.get_return(ensemble_pred_rew2) # (n_ensemble, batch_size), sum(\hat{r}(\tau2)) -> logits
             
             # get stacked logits before throwing to cross entropy loss
             ensemble_pred_rew = torch.cat([ensemble_pred_rew1, ensemble_pred_rew2], dim=-1) # (n_ensemble, batch_size, 2)
@@ -285,5 +278,13 @@ class EnsembleReward(BaseReward):
     def load(self, load_path: str) -> None:
         self.model.load_state_dict(torch.load(os.path.join(load_path, "reward.pth"), map_location=self.model.device))
 
-    
+    def get_return(self, ensemble_pred_rew):
+        # ensemble_pred_rew.shape = (n_ensemble, batch_size, segment_length, 1)
+        assert(len(ensemble_pred_rew.shape) == 4)
+        
+        # discount if necessary (gamma = 1.0 prevents any discounting, which is default)
+        discount = (self._gamma ** torch.arange(ensemble_pred_rew.size(2))).unsqueeze(0).unsqueeze(0).unsqueeze(-1).to(ensemble_pred_rew.device) # (1, 1, seg_len, 1)
+        ensemble_pred_rew = ensemble_pred_rew * discount
+        return ensemble_pred_rew.sum(2) # (n_ensemble, batch_size, 1), sum(\hat{r}(\tau1)) -> logits
+            
     
