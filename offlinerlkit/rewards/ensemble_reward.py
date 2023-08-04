@@ -20,6 +20,7 @@ class EnsembleReward(BaseReward):
         optim: torch.optim.Optimizer,
         scaler: Optional[StandardScaler],
         normalize_reward_eval: bool = False,
+        gamma: float = 1.0,
         penalty_coef: float = 0.0,
         uncertainty_mode: str = "aleatoric"
     ) -> None:
@@ -29,6 +30,9 @@ class EnsembleReward(BaseReward):
         self._normalize_reward_eval = normalize_reward_eval
         self._penalty_coef = penalty_coef
         self._uncertainty_mode = uncertainty_mode
+        
+        assert 0.0 <= gamma and gamma <= 1.0
+        self._gamma = gamma # in case we want to discount reward here
         
     @torch.no_grad()
     def get_reward(
@@ -185,9 +189,15 @@ class EnsembleReward(BaseReward):
             # print(f"are there nans being fed into TRAINING: {torch.isnan(obs1).any().item(), torch.isnan(act1).any().item(), torch.isnan(obs2).any().item(), torch.isnan(act2).any().item()}")
             
             # compute rewards and sum for trajectories
-            ensemble_pred_rew1, masks = self.model(obs1, act1, train=True) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau1))
-            ensemble_pred_rew2 = self.model(obs2, act2, masks=masks, train=True) # size (n_ensemble, batch_size) -> sum(\hat{r}(\tau2))
+            ensemble_pred_rew1, masks = self.model(obs1, act1, train=True) # size (n_ensemble, batch_size, seg_len, 1)
+            ensemble_pred_rew2 = self.model(obs2, act2, masks=masks, train=True) # size (n_ensemble, batch_size, seg_len, 1)
             # print(f"are any of these rewards nans: {torch.isnan(ensemble_pred_rew1).any().item(), torch.isnan(ensemble_pred_rew2).any().item()}")
+            
+            # discount if necessary (gamma = 1.0 prevents any discounting, which is default)
+            discount1 = (self._gamma ** torch.arange(ensemble_pred_rew1.size(2))).unsqueeze(0).unsqueeze(0).unsqueeze(-1).to(ensemble_pred_rew1.device) # (1, 1, seg_len, 1)
+            discount2 = (self._gamma ** torch.arange(ensemble_pred_rew2.size(2))).unsqueeze(0).unsqueeze(0).unsqueeze(-1).to(ensemble_pred_rew2.device) # (1, 1, seg_len, 1)
+            ensemble_pred_rew1 = ensemble_pred_rew1 * discount1
+            ensemble_pred_rew2 = ensemble_pred_rew2 * discount2
             
             ensemble_pred_rew1 = ensemble_pred_rew1.sum(2) # (n_ensemble, batch_size, 1), sum(\hat{r}(\tau1)) -> logits
             ensemble_pred_rew2 = ensemble_pred_rew2.sum(2) # (n_ensemble, batch_size, 1), sum(\hat{r}(\tau2)) -> logits

@@ -111,10 +111,17 @@ class EnsembleDynamicsModel(nn.Module):
         obs_action = torch.as_tensor(obs_action, dtype=torch.float32).to(self.device)
         output = obs_action
         masks = masks if masks is not None else self.masks
+        
+        count = 0
         for layer, mask in zip(self.backbones, masks):
+            assert not torch.isnan(output).any(), f"NaN output detected -- breaking out at layer {count}."
             output = self.activation(layer(output))
+            
+            assert not torch.isnan(output).any(), f"NaN output detected before mask -- breaking out at layer {count}."
             if train:
                 output = output * mask
+            
+            count += 1
         
         if self.fix_logvar is None:
             mean, logvar = torch.chunk(self.output_layer(output), 2, dim=-1)

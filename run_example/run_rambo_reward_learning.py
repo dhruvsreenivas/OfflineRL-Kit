@@ -87,7 +87,7 @@ def get_args():
     parser.add_argument("--reward-hidden-dims", type=int, nargs='*', default=[200, 200, 200, 200])
     parser.add_argument("--reward-dropout-probs", type=float, nargs='*', default=[0.0, 0.0, 0.0, 0.0])
     parser.add_argument("--reward-weight-decay", type=float, nargs='*', default=[0.0, 0.0, 0.0, 0.0, 0.0])
-    parser.add_argument("--reward-lr", type=float, default=3e-5)
+    parser.add_argument("--reward-lr", type=float, default=3e-4)
     parser.add_argument("--n-reward_models", type=int, default=7)
     parser.add_argument("--n-reward-elites", type=int, default=5)
     parser.add_argument("--reward-with-action", type=bool, default=True)
@@ -99,9 +99,12 @@ def get_args():
     parser.add_argument("--reward-uncertainty-mode", type=str, default="aleatoric")
     parser.add_argument("--reward-final-activation", type=str, default="none")
     parser.add_argument("--reward-soft-clamp", type=bool, default=False)
+    parser.add_argument("--sl-dynamics-coef", type=float, default=1.0)
     parser.add_argument("--adv-dynamics-coef", type=float, default=1.0)
     parser.add_argument("--adv-reward-coef", type=float, default=1.0)
+    parser.add_argument("--sl-reward-coef", type=float, default=1.0)
     parser.add_argument("--use-reward-scaler", type=bool, default=True, help='whether to use dynamics scaler for reward learning or not')
+    parser.add_argument("--pred-discounted-return", type=bool, default=False, help='whether to predict discounted return as opposed to full return.')
 
     parser.add_argument("--load-std-path", type=str, default=None) # load dynamics std path (for ant env)
     parser.add_argument("--fix-logvar-range", type=bool, default=False) # fixed min and max logvar for dynamics
@@ -262,6 +265,7 @@ def train(args=get_args()):
         reward_optim,
         dynamics.scaler if args.use_reward_scaler else None,
         args.normalize_reward_eval,
+        args.gamma if args.pred_discounted_return else 1.0,
         args.reward_penalty_coef,
         args.reward_uncertainty_mode
     )
@@ -284,11 +288,13 @@ def train(args=get_args()):
         tau=args.tau, 
         gamma=args.gamma, 
         alpha=alpha, 
-        adv_weight=args.adv_weight, 
+        adv_weight=args.adv_weight, # lambda parameter
         adv_rollout_length=args.rollout_length, 
         adv_rollout_batch_size=args.adv_batch_size,
+        sl_dynamics_loss_coef=args.sl_dynamics_coef, # how much do we weight the dynamics SL loss vs. other supervised losses... SUPERVISED LEARNING LOSS
         adv_dynamics_loss_coef=args.adv_dynamics_coef,
-        adv_reward_loss_coef=args.adv_reward_coef,
+        adv_reward_loss_coef=args.adv_reward_coef, # how much to weight the reward adversarial loss (V_pi - V_dataset) vs. the dynamics loss (V^pi_phi)
+        sl_reward_loss_coef=args.sl_reward_coef,
         include_ent_in_adv=args.include_ent_in_adv,
         scaler=policy_scaler,
         device=args.device

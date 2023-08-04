@@ -63,6 +63,31 @@ def validate_reward_model_ood(ensemble: EnsembleReward, dataset: Dict[str, np.nd
             correct += 1
             
     print(f"fraction of times the reward model predicted correctly on this dataset: {correct / 1000000}")
+    
+    
+def validate_model_ind_vs_ood(ensemble: EnsembleReward, worse_dataset: Dict[str, np.ndarray], better_dataset: Dict[str, np.ndarray]) -> None:
+    correct = 0
+    n_trajs1 = worse_dataset["observations"].shape[0] // 1000
+    n_trajs2 = better_dataset["observations"].shape[0] // 1000
+    for _ in range(100000): # less because of more data in raw memory
+        idx1 = np.random.randint(0, n_trajs1)
+        idx2 = np.random.randint(0, n_trajs2)
+        
+        s1, a1 = worse_dataset["observations"][1000 * idx1 : 1000 * (idx1 + 1)], worse_dataset["actions"][1000 * idx1 : 1000 * (idx1 + 1)]
+        s2, a2 = better_dataset["observations"][1000 * idx2 : 1000 * (idx2 + 1)], better_dataset["actions"][1000 * idx2 : 1000 * (idx2 + 1)]
+        gt_r1 = worse_dataset["rewards"][1000 * idx1 : 1000 * (idx1 + 1)].sum()
+        gt_r2 = better_dataset["rewards"][1000 * idx2 : 1000 * (idx2 + 1)].sum()
+        
+        r1 = ensemble.get_reward(s1, a1).sum()
+        r2 = ensemble.get_reward(s2, a2).sum()
+        if np.isnan(r1).any() or np.isnan(r2).any():
+            print("Hit a NaN, breaking out...")
+            break
+        
+        if (gt_r1 > gt_r2 and r1 > r2) or (gt_r1 < gt_r2 and r1 < r2):
+            correct += 1
+            
+    print(f"fraction of times the reward model predicted correctly on in-dataset vs out-of-dataset: {correct / 100000}")
 
 
 def test_normal_reward_learning(dataset: PreferenceDataset) -> None:
@@ -119,7 +144,7 @@ def test_normal_reward_learning(dataset: PreferenceDataset) -> None:
     return ensemble
 
 
-def test_reward_model_explained_variance(reward_model_dir: str, normalize_r: bool = False):
+def test_reward_model_explained_variance(reward_model_dir: str, normalize_r: bool = False) -> None:
     
     # load offline dataset corresponding to the reward model
     if "halfcheetah-medium-replay-v2" in reward_model_dir:
@@ -235,7 +260,7 @@ def test_reward_model_explained_variance(reward_model_dir: str, normalize_r: boo
     plt.savefig(f"./plots/ev_{'medium' if 'medium' in reward_model_dir else 'random'}.png")
     
     
-def test_model_ood(reward_path: str):
+def test_model_ood(reward_path: str) -> None:
     dataset = d4rl.qlearning_dataset(gym.make("halfcheetah-expert-v2"))
     
     reward_model = EnsembleRewardModel(
@@ -278,7 +303,55 @@ def test_model_ood(reward_path: str):
     
     # validate model
     validate_reward_model_ood(reward, dataset)
-
+    
+    
+def test_model_ind_vs_ood(reward_path: str) -> None:
+    ind_dataset_name = "halfcheetah-random-v2" if "halfcheetah-random-v2" in reward_path else "halfcheetah-medium-v2"
+    ind_dataset = d4rl.qlearning_dataset(gym.make(ind_dataset_name))
+    ood_dataset = d4rl.qlearning_dataset(gym.make("halfcheetah-expert-v2"))
+    
+    reward_model = EnsembleRewardModel(
+        obs_dim=ind_dataset["observations"].shape[-1],
+        action_dim=ind_dataset["actions"].shape[-1],
+        hidden_dims=[200, 200, 200, 200],
+        num_ensemble=7,
+        num_elites=5,
+        with_action=True,
+        weight_decays=[0.0, 0.0, 0.0, 0.0, 0.0],
+        dropout_probs=[0.0, 0.0, 0.0, 0.0],
+        reward_final_activation="none",
+        device="cuda"
+    )
+    
+    reward_optim = torch.optim.Adam(
+        reward_model.parameters(),
+        lr=3e-4
+    )
+    scaler = StandardScaler()
+    scaler.load_scaler(reward_path)
+    reward = EnsembleReward(
+        reward_model,
+        reward_optim,
+        scaler,
+        penalty_coef=0.0,
+        uncertainty_mode="aleatoric"
+    )
+    reward.load(reward_path)
+    print(f"loaded in reward model")
+    
+    # normalize both dataset obs
+    def normalize_obs(observations, eps=1e-3):
+        mean = np.mean(observations, 0, keepdims=True)
+        std = np.std(observations, 0, keepdims=True) + eps
+        norm_obs = (observations - mean) / std
+        return norm_obs
+    
+    ind_dataset["observations"] = normalize_obs(ind_dataset["observations"])
+    ood_dataset["observations"] = normalize_obs(ood_dataset["observations"])
+    
+    # validate
+    validate_model_ind_vs_ood(reward, ind_dataset, ood_dataset)
+    
 
 if __name__ == '__main__':
     # dataset = torch.load('./offline_data/halfcheetah-random-v2_snippet_preference_dataset_seglen15_deterministic.pt')
@@ -286,4 +359,4 @@ if __name__ == '__main__':
     # validate_reward_model(ensemble, dataset)
     
     reward_path = "./log/halfcheetah-random-v2/rambo_relabeled/seed_0&timestamp_23-0713-155029/model"
-    test_model_ood(reward_path)
+    test_model_ind_vs_ood(reward_path)

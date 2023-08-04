@@ -4,14 +4,15 @@ import argparse
 import uuid
 
 # ==== SWEEP PARAMS ====
-ENVS = ["walker2d-medium-v2", "walker2d-medium-expert-v2", "hopper-medium-replay-v2"]
-SL_DYNAMICS_COEFS = [0.01, 0.1, 1.0, 10.0] # how much to weight SL dynamics loss vs. BCE loss (keep reward loss at 1, it's scaled I think)
+ENVS = ["walker2d-medium-v2"]
+SL_DYNAMICS_COEFS = [0, 0.001, 0.01, 0.1, 1.0, 10.0] # how much to weight SL dynamics loss vs. BCE loss (keep reward loss at 1, it's basically scaled)
 ADV_COEFS = [0, 3e-6, 3e-5, 3e-4] # how much to weight adversarial loss vs. supervised loss
 SEGMENT_LENGTHS = [60]
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--nhrs', type=int, default=24)
+parser.add_argument('--nhrs', type=int, default=30)
+parser.add_argument("--netid", type=str, default="ds844")
 parser.add_argument('--base_save_dir', default=f'{os.path.abspath(os.path.join(os.getcwd()))}')
 parser.add_argument('--output-dirname', default='our_method_sweep_out')
 parser.add_argument('--error-dirname', default='our_method_sweep_err')
@@ -36,12 +37,12 @@ for param in params:
     env, adv_dynamics_coef, adv_coef, seglen = param
     
     # create experiment name for logging
-    name = f"{env}_dynweight_{adv_dynamics_coef}_advweight_{adv_coef}_seglen_{seglen}"
+    name = f"{env}_dynweight{adv_dynamics_coef}_advweight{adv_coef}_seglen{seglen}"
     
     # create the command
     cmd = 'python run_example/run_rambo_reward_learning.py '
     cmd += f'--task {env} --adv-weight {adv_coef} --use-reward-scaler True '
-    cmd += f'--rollout-length 5 --segment-length {seglen} --adv-dynamics-coef {adv_dynamics_coef} '
+    cmd += f'--rollout-length 5 --segment-length {seglen} --adv-dynamics-coef {adv_dynamics_coef} --reward-soft-clamp True '
 
     jobs.append((cmd, name, param))
 
@@ -106,7 +107,7 @@ while not done:
 
     # Make a {name}.slurm file in the {output_dir} which defines this job.
     #slurm_script_path = os.path.join(output_dir, '%s.slurm' % name)
-    start=1
+    start = 1
     slurm_script_path = os.path.join(output_dir, f'boost_{start}_{num_commands}.slurm')
     slurm_command = "sbatch %s" % slurm_script_path
 
@@ -114,8 +115,8 @@ while not done:
     with open(slurm_script_path, 'w') as slurmfile:
         slurmfile.write("#!/bin/bash\n")
         slurmfile.write(f"#SBATCH --array=1-{num_commands}\n")
-        slurmfile.write("#SBATCH -o /home/ds844/OfflineRL-Kit/slurm/multijob_output/adv_pref_rew_learn_sweep_%j.out\n")
-        slurmfile.write("#SBATCH -e /home/ds844/OfflineRL-Kit/slurm/multijob_error/adv_pref_rew_learn_sweep_%j.err\n")
+        slurmfile.write(f"#SBATCH -o /home/{args.netid}/OfflineRL-Kit/slurm/multijob_output/adv_pref_rew_learn_sweep_%j.out\n")
+        slurmfile.write(f"#SBATCH -e /home/{args.netid}/OfflineRL-Kit/slurm/multijob_error/adv_pref_rew_learn_sweep_%j.err\n")
         slurmfile.write("#SBATCH --requeue\n")
         slurmfile.write("#SBATCH -t %d:00:00\n" % args.nhrs)
         
@@ -123,7 +124,7 @@ while not done:
         slurmfile.write("#SBATCH -N 1\n")
         slurmfile.write("#SBATCH -n 1\n")
         slurmfile.write("#SBATCH --gres=gpu:3090:1")
-        slurmfile.write("#SBATCH --mem=30G\n")
+        slurmfile.write("#SBATCH --mem=50G\n")
 
         # Greene (can use sun here if needed)
         # slurmfile.write("#SBATCH --qos gpu48\n")
@@ -132,7 +133,7 @@ while not done:
 
         slurmfile.write("\n")
         slurmfile.write("source /share/apps/anaconda3/2021.11/etc/profile.d/conda.sh\n")
-        slurmfile.write("cd /home/ds844/OfflineRL-Kit\n")
+        slurmfile.write(f"cd /home/{args.netid}/OfflineRL-Kit\n")
         slurmfile.write("conda activate offline_rlkit\n")
         slurmfile.write(f"srun --output=$(head -n $SLURM_ARRAY_TASK_ID {log_name} | tail -n 1) --error=$(head -n    $SLURM_ARRAY_TASK_ID {err_name} | tail -n 1)  $(head -n $SLURM_ARRAY_TASK_ID {now_name} | tail -n 1)\n" )
         slurmfile.write("\n")

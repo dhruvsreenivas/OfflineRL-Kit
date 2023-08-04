@@ -40,8 +40,10 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         adv_weight: float = 0,
         adv_train_steps: int = 1000,
         adv_rollout_batch_size: int = 256,
+        sl_dynamics_loss_coef: float = 1.0,
         adv_dynamics_loss_coef: float = 1.0,
         adv_reward_loss_coef: float = 1.0,
+        sl_reward_loss_coef: float = 1.0,
         reward_batch_size: int = 20,
         adv_rollout_length: int = 5,
         include_ent_in_adv: bool = False,
@@ -69,11 +71,15 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         self._adv_rollout_batch_size = adv_rollout_batch_size
         self._reward_batch_size = reward_batch_size
         self._adv_rollout_length = adv_rollout_length
+        self._sl_dynamics_loss_coef = sl_dynamics_loss_coef
         self._adv_dynamics_loss_coef = adv_dynamics_loss_coef
+        self._sl_reward_loss_coef = sl_reward_loss_coef
         self._adv_reward_loss_coef = adv_reward_loss_coef
         self._include_ent_in_adv = include_ent_in_adv
         self.scaler = scaler
         self.device = device
+        
+        # debugging stuff
         self.count = (0, 0, 0)
         
     def load(self, path):
@@ -188,6 +194,8 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         observations = torch.from_numpy(observations).to(diff_mean.device) # normalized from before
         actions = torch.from_numpy(actions).to(diff_mean.device) # normalized from before
         
+        # =================== Adversarial dynamics loss calculation ===================
+        
         # outputs
         diff_obs = diff_mean # in this case we don't care about reward, (n_ensemble, batch_size, state_dim)
         mean = diff_obs + observations
@@ -202,7 +210,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         sample = ensemble_sample[selected_indexes, np.arange(batch_size)]
         next_observations = sample # this has dynamics gradients
         if self.reward.scaler is not None:
-            obs_dim, action_dim = observations.shape[-1], actions.shape[-1]
+            obs_dim, action_dim = observations.size(-1), actions.size(-1)
             pi_obs_act = torch.cat([observations, actions], dim=-1)
             pi_obs_act = self.reward.scaler.transform(pi_obs_act)
             pi_observations_reward_input, pi_actions_reward_input = torch.split(pi_obs_act, [obs_dim, action_dim], dim=-1)
@@ -233,6 +241,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
             )
             if self._include_ent_in_adv:
                 next_q = next_q - self._alpha * next_policy_log_prob
+            
             value = rewards + (1 - torch.from_numpy(terminals).to(mean.device).float()) * self._gamma * next_q # don't pass gradients of this to reward
             value_baseline = torch.minimum(
                 self.critic1(observations, actions), 
@@ -248,7 +257,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         sl_actions = torch.from_numpy(sl_actions).to(diff_mean.device) if not torch.is_tensor(sl_actions) else sl_actions
         
         if self.reward.scaler is not None:
-            obs_dim, action_dim = sl_observations.shape[-1], sl_actions.shape[-1]
+            obs_dim, action_dim = sl_observations.size(-1), sl_actions.size(-1)
             dataset_obs_act = torch.cat([sl_observations, sl_actions], dim=-1)
             dataset_obs_act = self.reward.scaler.transform(dataset_obs_act)
             dataset_observations_reward_input, dataset_actions_reward_input = torch.split(dataset_obs_act, [obs_dim, action_dim], dim=-1)
@@ -261,25 +270,13 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         v_dataset = dataset_rewards.mean()
         v_pi_model = pi_rewards.mean()
         
-        # update counts
-        # c_d, c_pi, c_eq = self.count
-        # if v_dataset > v_pi_model:
-        #     c_d += 1
-        # elif v_dataset < v_pi_model:
-        #     c_pi += 1
-        # else:
-        #     c_eq += 1
-        # self.count = (c_d, c_pi, c_eq)
-
-        # normalize reward output to be similar in scale to advantages
-        # v_dataset = (v_dataset - v_dataset.mean()) / (v_dataset.std() + 1e-6)
-        # v_pi_model = (v_pi_model - v_pi_model.mean()) / (v_pi_model.std() + 1e-6)
-        
         # total adv loss
         adv_reward_loss = (1 / (1 - self._gamma + 1e-6)) * (v_pi_model - v_dataset)
         if self.reward.model.soft_clamp_output:
             adv_reward_loss += 0.001 * self.reward.model.max_reward.sum() - 0.001 * self.reward.model.min_reward.sum()
-        adv_loss = adv_dynamics_loss + adv_reward_loss
+        adv_loss = self._adv_dynamics_loss_coef * adv_dynamics_loss + self._adv_reward_loss_coef * adv_reward_loss
+        
+        # =================== Supervised loss here (MLE of the dynamics + the reward BCE loss) ===================
 
         # compute the supervised loss
         sl_input = torch.cat([sl_observations, sl_actions], dim=-1).cpu().numpy()
@@ -297,7 +294,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         # add reward loss here on preference batch to add to supervised loss
         normalize_input = self.reward.scaler is not None
         sl_loss_reward = self.reward_loss(preference_batch, normalize_input)
-        sl_loss = self._adv_dynamics_loss_coef * sl_loss_dynamics + self._adv_reward_loss_coef * sl_loss_reward
+        sl_loss = self._sl_dynamics_loss_coef * sl_loss_dynamics + self._sl_reward_loss_coef * sl_loss_reward
         
         all_loss = self._adv_weight * adv_loss + sl_loss
         
@@ -307,7 +304,8 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         all_loss.backward()
         self._dynamics_adv_optim.step()
         self._reward_adv_optim.step()
-
+        
+        # log
         info_dict = {
             "adv_dynamics_update/all_loss": all_loss.cpu().item(), 
             "adv_dynamics_update/sl_loss": sl_loss.cpu().item(), 
