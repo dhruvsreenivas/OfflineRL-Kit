@@ -94,6 +94,7 @@ def get_args():
     parser.add_argument("--reward-uncertainty-mode", type=str, default="aleatoric")
     parser.add_argument("--reward-final-activation", type=str, default="none")
     parser.add_argument("--normalize-relabeled-reward", type=bool, default=False)
+    parser.add_argument("--load-reward-path", type=str, default=None)
 
     parser.add_argument("--load-std-path", type=str, default=None) # load dynamics std path (for ant env)
     parser.add_argument("--fix-logvar-range", type=bool, default=False) # fixed min and max logvar for dynamics
