@@ -15,6 +15,7 @@ from offlinerlkit.policy.model_based.mobile import MOBILEPolicy
 from offlinerlkit.policy.model_based.rambo import RAMBOPolicy
 from offlinerlkit.policy.model_based.rambo_hybrid import HybridRAMBOPolicy
 from offlinerlkit.policy.model_based.rambo_reward_learning import RAMBORewardLearningPolicy
+from offlinerlkit.policy.model_based.rambo_hybrid_reward_learning import HybridRAMBORewardLearningPolicy
 from offlinerlkit.policy.model_based.rambo_reward_learning_shared import RAMBORewardLearningSharedPolicy
 from offlinerlkit.policy.model_based.combo import COMBOPolicy
 
@@ -33,6 +34,7 @@ __all__ = [
     "RAMBOPolicy",
     "HybridRAMBOPolicy",
     "RAMBORewardLearningPolicy",
+    "HybridRAMBORewardLearningPolicy",
     "RAMBORewardLearningSharedPolicy",
     "COMBOPolicy"
 ]
