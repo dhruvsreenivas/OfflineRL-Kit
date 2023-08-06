@@ -76,6 +76,7 @@ def get_args():
     parser.add_argument("--bc-lr", type=float, default=1e-4)
     parser.add_argument("--bc-epoch", type=int, default=50)
     parser.add_argument("--bc-batch-size", type=int, default=256)
+    parser.add_argument("--fix-logvar-range", type=bool, default=False) # fixed min and max logvar for dynamics
     parser.add_argument("--online-ratio", type=float, default=0.5)
 
     return parser.parse_args()
@@ -155,7 +156,8 @@ def train(args=get_args()):
         num_ensemble=args.n_ensemble,
         num_elites=args.n_elites,
         weight_decays=args.dynamics_weight_decay,
-        device=args.device
+        device=args.device,
+        fix_logvar_range=args.fix_logvar_range,
     )
     dynamics_optim = torch.optim.Adam(
         dynamics_model.parameters(),

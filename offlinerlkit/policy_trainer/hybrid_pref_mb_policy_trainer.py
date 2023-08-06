@@ -230,7 +230,7 @@ class HybridPrefMBPolicyTrainer:
                     reward_lst = torch.stack(reward_lst, dim=0)
 
                     start_idx = torch.randint(0, obs_lst.shape[0] - segment_length, (1,)) if obs_lst.shape[0] > segment_length else 0
-                    start_idx = start_idx.item()
+                    start_idx = start_idx
                     if traj == 0:
                         obs_1.append(obs_lst[start_idx : start_idx + segment_length])
                         act_1.append(act_lst[start_idx : start_idx + segment_length])
