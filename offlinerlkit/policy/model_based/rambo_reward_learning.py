@@ -47,6 +47,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         reward_batch_size: int = 20,
         adv_rollout_length: int = 5,
         include_ent_in_adv: bool = False,
+        use_real_batch_in_policy_update: bool = True,
         scaler: StandardScaler = None,
         device="cpu"
     ) -> None:
@@ -76,6 +77,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         self._sl_reward_loss_coef = sl_reward_loss_coef
         self._adv_reward_loss_coef = adv_reward_loss_coef
         self._include_ent_in_adv = include_ent_in_adv
+        self._use_real_batch_in_policy_update = use_real_batch_in_policy_update
         self.scaler = scaler
         self.device = device
         
@@ -405,15 +407,18 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
     def learn(self, batch: Dict) -> Dict[str, float]:
         real_batch, fake_batch = batch["real"], batch["fake"]
         
-        # replace real rewards with what our reward model predicts
-        old_reward_shape = real_batch["rewards"].shape
-        pred_rewards = self.reward.get_reward(real_batch["observations"], real_batch["actions"])
-        real_batch["rewards"] = torch.from_numpy(pred_rewards).to(fake_batch["rewards"].device)
-        assert real_batch["rewards"].shape == old_reward_shape, "wrong reward shape!"
-        
-        # now learn on the real batch + fake batch
-        batch = {"real": real_batch, "fake": fake_batch}
-        return super().learn(batch)
+        if self._use_real_batch_in_policy_update:
+            # replace real rewards with what our reward model predicts
+            old_reward_shape = real_batch["rewards"].shape
+            pred_rewards = self.reward.get_reward(real_batch["observations"], real_batch["actions"])
+            real_batch["rewards"] = torch.from_numpy(pred_rewards).to(fake_batch["rewards"].device)
+            assert real_batch["rewards"].shape == old_reward_shape, "wrong reward shape!"
+            
+            # now learn on the real batch + fake batch
+            batch = {"real": real_batch, "fake": fake_batch}
+            return super().learn(batch)
+        else:
+            super().learn(fake_batch)
     
     
     # ====== debug functions ======

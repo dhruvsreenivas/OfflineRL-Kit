@@ -108,6 +108,7 @@ def get_args():
 
     parser.add_argument("--load-std-path", type=str, default=None) # load dynamics std path (for ant env)
     parser.add_argument("--fix-logvar-range", type=bool, default=False) # fixed min and max logvar for dynamics
+    parser.add_argument("--use-real-batch-in-policy-update", type=bool, default=True, help="whether to use real policy data in MB policy update.")
     return parser.parse_args()
 
 
@@ -296,6 +297,7 @@ def train(args=get_args()):
         adv_reward_loss_coef=args.adv_reward_coef, # how much to weight the reward adversarial loss (V_pi - V_dataset) vs. the dynamics loss (V^pi_phi)
         sl_reward_loss_coef=args.sl_reward_coef,
         include_ent_in_adv=args.include_ent_in_adv,
+        use_real_batch_in_policy_update=args.use_real_batch_in_policy_update,
         scaler=policy_scaler,
         device=args.device
     ).to(args.device)

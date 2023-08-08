@@ -70,7 +70,7 @@ def plot_data(args):
         ax[3].set_ylabel("Total adversarial loss")
         
         ax[4].plot(timesteps, df["adv_dynamics_update/adv_loss"])
-        ax[4].set_ylabel("Value difference (v_pi - v_dataset)")
+        ax[4].set_ylabel("total dynamics objective (V^pi_phi)")
         
     # set x label
     plt.xlabel("Training timesteps")
@@ -153,9 +153,9 @@ def plot_multiple_runs(task, algos, runs):
         plt.savefig(f"{plot_dir}/progress_plot.jpg")
     
 if __name__ == "__main__":
-    # task = 'walker2d-medium-v2'
-    # algos = ['rambo_reward_learning', 'rambo_reward_learning', 'rambo_reward_learning', 'rambo_reward_learning']
-    # runs = ['seed_0&timestamp_23-0801-123326', 'seed_0&timestamp_23-0801-145916', 'seed_0&timestamp_23-0801-154032', 'seed_0&timestamp_23-0801-154300']
+    task = 'walker2d-medium-v2'
+    algos = ['rambo', 'rambo_relabeled', 'rambo_reward_learning']
+    runs = ['seed_0&timestamp_23-0720-222236', 'seed_0&timestamp_23-0729-174629', 'seed_0&timestamp_23-0803-084312']
     
-    # plot_multiple_runs(task, algos, runs)
-    plot_data(get_plot_args())
+    plot_multiple_runs(task, algos, runs)
+    # plot_data(get_plot_args())
