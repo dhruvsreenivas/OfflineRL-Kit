@@ -48,6 +48,8 @@ class HybridRAMBORewardLearningPolicy(MOPOPolicy):
         adv_rollout_length: int = 5,
         include_ent_in_adv: bool = False,
         scaler: StandardScaler = None,
+        online_ratio: float = 0.5, 
+        online_preference_ratio: float = 0.5,
         device="cpu"
     ) -> None:
         super().__init__(
@@ -76,6 +78,8 @@ class HybridRAMBORewardLearningPolicy(MOPOPolicy):
         self._sl_reward_loss_coef = sl_reward_loss_coef
         self._adv_reward_loss_coef = adv_reward_loss_coef
         self._include_ent_in_adv = include_ent_in_adv
+        self._online_ratio = online_ratio
+        self._online_preference_ratio = online_preference_ratio
         self.scaler = scaler
         self.device = device
         
@@ -147,33 +151,29 @@ class HybridRAMBORewardLearningPolicy(MOPOPolicy):
             for t in range(self._adv_rollout_length):
                 # get policy actions
                 actions = super().select_action(observations)
-                offline_buffer_size = self._adv_rollout_batch_size - online_buffer["observations"].shape[0]
+
+                # get sl data
+                online_buffer_size = int(self._adv_rollout_batch_size * self._online_ratio)
+                offline_buffer_size = self._adv_rollout_batch_size - online_buffer_size
                 offline_observations, offline_actions, offline_next_observations = \
                     itemgetter("observations", "actions", "next_observations")(real_buffer.sample(offline_buffer_size))
-                # convert online data to tensor
-                online_observations = torch.tensor(online_buffer['observations'], device=offline_observations.device)
-                online_actions = torch.tensor(online_buffer['actions'], device=offline_observations.device)
-                online_next_observations = torch.tensor(online_buffer['next_observations'], device=offline_observations.device)
+                online_observations, online_actions, online_next_observations = \
+                    itemgetter("observations", "actions", "next_observations")(online_buffer.sample(online_buffer_size))
                 # mix online data with offline data
                 sl_observations = torch.cat((online_observations, offline_observations), dim=0)
                 sl_actions = torch.cat((online_actions, offline_actions), dim=0)
                 sl_next_observations = torch.cat((online_next_observations, offline_next_observations), dim=0)
 
-                # mix online preference buffer and offline preference buffer
-                preference_batch = {}
-                offline_preference_buffer_size = self._reward_batch_size - online_preference_buffer["observations1"].shape[0]
-                offline_preference_batch = offline_preference_buffer.sample(offline_preference_buffer_size)
-                preference_batch["observations1"] = torch.cat((online_preference_buffer["observations1"], offline_preference_batch["observations1"]), dim=0)
-                preference_batch["actions1"] = torch.cat((online_preference_buffer["actions1"], offline_preference_batch["actions1"]), dim=0)
-                preference_batch["next_observations1"] = torch.cat((online_preference_buffer["next_observations1"], offline_preference_batch["next_observations1"]), dim=0)
-                preference_batch["observations2"] = torch.cat((online_preference_buffer["observations2"], offline_preference_batch["observations2"]), dim=0)
-                preference_batch["actions2"] = torch.cat((online_preference_buffer["actions2"], offline_preference_batch["actions2"]), dim=0)
-                preference_batch["next_observations2"] = torch.cat((online_preference_buffer["next_observations2"], offline_preference_batch["next_observations2"]), dim=0)
-                preference_batch["label"] = torch.cat((online_preference_buffer["label"], offline_preference_batch["label"]), dim=0)
+                # mix online preference buffer and offline preference buffe
+                online_preference_batch_size = int(self._reward_batch_size * self._online_preference_ratio)
+                offline_preference_batch_size = self._reward_batch_size - online_preference_batch_size
+                online_preference_batch = online_preference_buffer.sample(online_preference_batch_size)
+                offline_preference_batch = offline_preference_buffer.sample(offline_preference_batch_size)
+                preference_batch = {k: torch.cat((online_preference_batch[k], offline_preference_batch[k]), dim=0) for k in online_preference_batch}
 
-                # gather new batch of offline data and update the model (here we sample from both offline dataset + preference dataset)
-                mix_batch = (observations, actions, sl_observations, sl_actions, sl_next_observations)
-                next_observations, terminals, loss_info = self.dynamics_step_and_forward(mix_batch, preference_batch)
+                # gather new batch of mixed data and update the model (here we sample from both transition dataset + preference dataset)
+                data_batch = (observations, actions, sl_observations, sl_actions, sl_next_observations)
+                next_observations, terminals, loss_info = self.dynamics_step_and_forward(data_batch, preference_batch)
                 for _key in loss_info:
                     if 'reward_max' in _key or 'reward_min' in _key:
                         all_loss_info[_key] = loss_info[_key]

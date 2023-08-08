@@ -164,6 +164,34 @@ class PreferenceDataset(Dataset):
             for k in list(dps[0].keys())
         }
         return batch
+    
+    def add_batch(
+        self,
+        observations1,
+        actions1,
+        next_observations1,
+        terminals1,
+        observations2,
+        actions2,
+        next_observations2,
+        terminals2,
+        label,
+    ) -> None:
+        for idx in range(observations1.shape[0]):
+            tau1 = {
+                "observations": observations1[idx],
+                "actions": actions1[idx],
+                "next_observations": next_observations1[idx],
+                "terminals": terminals1[idx],
+            }
+            tau2 = {
+                "observations": observations2[idx],
+                "actions": actions2[idx],
+                "next_observations": next_observations2[idx],
+                "terminals": terminals2[idx],
+            }
+            label_idx = label[idx]
+            self.offline_data.append((tau1, tau2, label_idx))
         
     def statistics(self, eps: float = 1e-3) -> Tuple[np.ndarray, np.ndarray]:
         """Gets mean and std ALL (obs, actions) inputs (from both tau1 and tau2)."""

@@ -200,6 +200,14 @@ def train(args=get_args()):
         action_dtype=np.float32,
         device=args.device
     )
+    online_buffer = ReplayBuffer(
+        buffer_size=len(dataset["observations"]),
+        obs_shape=args.obs_shape,
+        obs_dtype=np.float32,
+        action_dim=args.action_dim,
+        action_dtype=np.float32,
+        device=args.device
+    )
     
     dataset_path = f"/home/{netid}/OfflineRL-Kit/offline_data/{args.task}_snippet_preference_dataset_seglen{args.segment_length}_deterministic.pt" # here, observations are not normalized
     pref_dataset = torch.load(dataset_path)
@@ -299,6 +307,8 @@ def train(args=get_args()):
         sl_reward_loss_coef=args.sl_reward_coef,
         include_ent_in_adv=args.include_ent_in_adv,
         scaler=policy_scaler,
+        online_ratio=args.online_ratio,
+        online_preference_ratio=args.online_preference_ratio,
         device=args.device
     ).to(args.device)
     
@@ -315,23 +325,24 @@ def train(args=get_args()):
     logger = Logger(log_dirs, output_config)
     logger.log_hyperparameters(vars(args))
     
+    online_preference_dataset = PreferenceDataset(offline_data=[], device=pref_dataset.device)
     # create policy trainer
     policy_trainer = HybridPrefMBPolicyTrainer(
         policy=policy,
         eval_env=env,
-        preference_dataset=pref_dataset,
+        offline_preference_dataset=pref_dataset,
+        online_preference_dataset=online_preference_dataset,
         real_buffer=real_buffer,
         fake_buffer=fake_buffer,
+        online_buffer=online_buffer,
         logger=logger,
         rollout_setting=(args.rollout_freq, args.rollout_batch_size, args.rollout_length),
         dynamics_update_freq=args.dynamics_update_freq,
         epoch=args.epoch,
         step_per_epoch=args.step_per_epoch,
         batch_size=args.batch_size,
-        real_ratio=args.real_ratio,
-        online_ratio=args.online_ratio,
-        online_preference_ratio=args.online_preference_ratio,
         eval_episodes=args.eval_episodes,
+        real_ratio=args.real_ratio,
         gamma=args.gamma,
         segment_length=args.segment_length
     )
