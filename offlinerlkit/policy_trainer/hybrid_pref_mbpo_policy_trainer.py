@@ -38,6 +38,7 @@ class HybridMBPOPolicyTrainer:
         # training args
         epochs: int = 1000,
         steps_per_epoch: int = 1000,
+        model_retain_epochs: int = 1,
         buffer_batch_size: int = 256,
         pref_batch_size: int = 256,
         init_exploration_steps: int = 0, # offline data hopefully helps overcome exploration early so we can set this to be small.
@@ -67,6 +68,7 @@ class HybridMBPOPolicyTrainer:
         
         self._epochs = epochs
         self._steps_per_epoch = steps_per_epoch
+        self._model_retain_epochs = model_retain_epochs
         self._buffer_batch_size = buffer_batch_size
         self._pref_batch_size = pref_batch_size
         self._init_exploration_steps = init_exploration_steps
@@ -193,6 +195,30 @@ class HybridMBPOPolicyTrainer:
         self.online_preference_dataset.add_batch(**preference_batch)
         
         
+    def resize_mb_buffer(self, rollout_length: int) -> None:
+        """Resizes the model's online replay buffer to account for new model length.
+        Does something different from the original MBPO implementation in accordance to what MOPO did.
+        """
+        new_buffer_size = self._rollout_batch_size * rollout_length * self._model_retain_epochs,
+
+        all_samples = self.online_mb_buffer.sample_all()
+        new_buffer = ReplayBuffer(
+            new_buffer_size,
+            self.online_mb_buffer.obs_shape,
+            self.online_mb_buffer.obs_dtype,
+            self.online_mb_buffer.action_dim,
+            self.online_mb_buffer.action_dtype,
+            self.online_mb_buffer.device
+        )
+        new_buffer.add_batch(
+            obss=all_samples["observations"],
+            next_obss=all_samples["next_observations"],
+            actions=all_samples["actions"],
+            rewards=all_samples["rewards"],
+            terminals=all_samples["terminals"]
+        )
+        self.online_mb_buffer = new_buffer
+        
     def train(self) -> Dict[str, float]:
         # fill up buffer with initial random exploration samples
         self.add_online_data()
@@ -225,6 +251,7 @@ class HybridMBPOPolicyTrainer:
                     new_rollout_length = self.set_rollout_length(e - 1)
                     if new_rollout_length != rollout_length:
                         rollout_length = new_rollout_length
+                        self.resize_mb_buffer(rollout_length)
                         
                     # rollout in new model from real buffer states
                     init_obss = self.online_buffer.sample(self._rollout_batch_size)["observations"].cpu().numpy()
