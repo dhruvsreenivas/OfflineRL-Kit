@@ -140,7 +140,10 @@ class HybridMBPORewardLearningPolicy(SACPolicy):
         assert "fake" in batch, "Model-based data expected in the batch."
         
         real_online_batch, real_offline_batch, fake_batch = batch["real_online"], batch["real_offline"], batch["fake"]
-        mix_batch = {k: torch.cat([real_online_batch[k], real_offline_batch[k], fake_batch[k]], dim=0) for k in real_online_batch.keys()}
+        if fake_batch is not None:
+            mix_batch = {k: torch.cat([real_online_batch[k], real_offline_batch[k], fake_batch[k]], dim=0) for k in real_online_batch.keys()}
+        else:
+            mix_batch = {k: torch.cat([real_online_batch[k], real_offline_batch[k]], dim=0) for k in real_online_batch.keys()}
         
         # grab real reward from learned reward model
         old_reward_shape = mix_batch["rewards"].size()

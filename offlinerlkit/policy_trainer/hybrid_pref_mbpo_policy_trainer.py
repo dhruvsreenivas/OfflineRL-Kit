@@ -243,7 +243,7 @@ class HybridMBPOPolicyTrainer:
             for it in pbar:
                 
                 # update the dynamics if necessary
-                if 0 < self._dynamics_update_freq and (num_timesteps + 1) % self._dynamics_update_freq == 0:
+                if 0 < self._dynamics_update_freq and num_timesteps % self._dynamics_update_freq == 0:
                     self.add_online_data(init_exploration=False)
                     dynamics_update_info = self.policy.update_dynamics_and_reward(
                         self.offline_buffer,
@@ -284,8 +284,11 @@ class HybridMBPOPolicyTrainer:
                 offline_batch_size = self._online_ratio * self._buffer_batch_size
                 
                 online_batch = self.online_buffer.sample(real_batch_size)
-                mb_batch = self.online_mb_buffer.sample(model_batch_size)
                 offline_batch = self.offline_buffer.sample(offline_batch_size)
+                try:
+                    mb_batch = self.online_mb_buffer.sample(model_batch_size)
+                except ValueError:
+                    mb_batch = None
                 
                 hybrid_batch = {
                     "real_online": online_batch,
