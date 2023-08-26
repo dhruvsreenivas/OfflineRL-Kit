@@ -71,6 +71,7 @@ class HybridMBPOPolicyTrainer:
         self._model_retain_epochs = model_retain_epochs
         self._buffer_batch_size = buffer_batch_size
         self._pref_batch_size = pref_batch_size
+        
         self._init_exploration_steps = init_exploration_steps
         self._segment_length = self.offline_preference_dataset[0]["observations1"].size(0) # this is of size (seg_length, obs_dim), useful for online dataset collection
         self._real_to_mb_ratio = real_to_mb_ratio
@@ -92,7 +93,7 @@ class HybridMBPOPolicyTrainer:
         return int(rollout_length)
     
     
-    def add_online_data(self) -> None:
+    def add_online_data(self, init_exploration=True) -> None:
         """Do initial exploration steps and add to online buffers (both transition + preference)."""
         self.policy.eval()
         device = self.policy.reward.model.device
@@ -103,13 +104,16 @@ class HybridMBPOPolicyTrainer:
         
         traj = 0
         reward_1, reward_2 = 0, 0
-        while current_batch_size < self._init_exploration_steps // self._segment_length + 1:
-            # this is the number of batches that we need to get at `self._init_exploration_steps` total samples into both buffers
+        
+        num_steps = self._init_exploration_steps if init_exploration else 1 # this is because at every online data collection phase, we can just sample 1 (tau1, tau2, label) and 1 transition to add online
+        while current_batch_size < num_steps // self._segment_length + 1:
+            # this is the number of batches that we need to get at least `num_steps` total samples into both buffers
             obs = self.train_env.reset()
             obs_lst, act_lst, next_obs_lst, reward_lst, term_lst = [], [], [], [], []
             
             # start rolling out
-            while True:
+            terminal = False
+            while not terminal:
                 action = self.policy.select_action(obs.reshape(1, -1), deterministic=False)
                 next_obs, reward, terminal, _ = self.train_env.step(action.flatten())
                 
@@ -181,6 +185,7 @@ class HybridMBPOPolicyTrainer:
                             label.append(torch.tensor(0, device=device))
                         traj = 0
                         current_batch_size += 1 # finish collecting two trajectories and the label
+                        
                     break
         
         # stack observations into size (online_buffer_size, obs_dim)
@@ -222,7 +227,7 @@ class HybridMBPOPolicyTrainer:
         
     def train(self) -> Dict[str, float]:
         # fill up buffer with initial random exploration samples
-        self.add_online_data()
+        self.add_online_data(init_exploration=True)
         start_time = time.time()
         
         num_timesteps = 0
@@ -239,7 +244,7 @@ class HybridMBPOPolicyTrainer:
                 
                 # update the dynamics if necessary
                 if 0 < self._dynamics_update_freq and (num_timesteps + 1) % self._dynamics_update_freq == 0:
-                    self.add_online_data()
+                    self.add_online_data(init_exploration=False)
                     dynamics_update_info = self.policy.update_dynamics_and_reward(
                         self.offline_buffer,
                         self.online_buffer,
@@ -269,7 +274,7 @@ class HybridMBPOPolicyTrainer:
                         
                 # rollout policy in real env, get reward from learned reward model (as there is nothing else to really do)
                 if self._add_data_outside_of_model_training:
-                    action = self.policy.select_action(curr_state, deterministic=False)
+                    action = self.policy.select_action(curr_state.reshape(1, -1), deterministic=False).squeeze()
                     next_state, _, terminal, _ = self.train_env.step(action)
                     self.online_buffer.add(curr_state, next_state, action, 0, terminal)
                 

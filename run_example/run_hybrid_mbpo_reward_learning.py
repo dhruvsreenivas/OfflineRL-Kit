@@ -349,7 +349,7 @@ def train(args=get_args()):
             batch_size=args.reward_batch_size
         )
     
-    validate_reward_model(reward, offline_pref_dataset)
+    # validate_reward_model(reward, offline_pref_dataset)
     
     # start training policy
     policy_trainer.train()

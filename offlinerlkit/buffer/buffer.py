@@ -157,7 +157,13 @@ class PreferenceDataset(Dataset):
     def sample(self, batch_size: int) -> Dict[str, torch.Tensor]:
         """Samples a batch of stuff randomly from the dataset."""
         assert batch_size > 0, "batch_size <= 0 is bad"
-        idxs = np.random.randint(0, len(self.offline_data), batch_size)
+        if len(self.offline_data) < batch_size:
+            # sample with replacement
+            idxs = np.random.choice(np.arange(len(self.offline_data)), batch_size, replace=True)
+        else:
+            # sample without replacement
+            idxs = np.random.randint(0, len(self.offline_data), batch_size)
+        
         dps = [self[idx] for idx in idxs]
         batch = {
             k: torch.stack([dp[k] for dp in dps])
@@ -167,31 +173,47 @@ class PreferenceDataset(Dataset):
     
     def add_batch(
         self,
-        observations1,
-        actions1,
-        next_observations1,
-        terminals1,
-        observations2,
-        actions2,
-        next_observations2,
-        terminals2,
-        label,
+        observations1: np.ndarray,
+        actions1: np.ndarray,
+        next_observations1: np.ndarray,
+        terminals1: np.ndarray,
+        observations2: np.ndarray,
+        actions2: np.ndarray,
+        next_observations2: np.ndarray,
+        terminals2: np.ndarray,
+        label: Union[np.ndarray, torch.Tensor],
     ) -> None:
-        for idx in range(observations1.shape[0]):
+        if observations1.ndim == 3:
+            for idx in range(observations1.shape[0]):
+                tau1 = {
+                    "observations": observations1[idx],
+                    "actions": actions1[idx],
+                    "next_observations": next_observations1[idx],
+                    "terminals": terminals1[idx],
+                }
+                tau2 = {
+                    "observations": observations2[idx],
+                    "actions": actions2[idx],
+                    "next_observations": next_observations2[idx],
+                    "terminals": terminals2[idx],
+                }
+                label_idx = label[idx]
+                self.offline_data.append((tau1, tau2, label_idx))
+        else:
+            assert observations1.ndim == 2
             tau1 = {
-                "observations": observations1[idx],
-                "actions": actions1[idx],
-                "next_observations": next_observations1[idx],
-                "terminals": terminals1[idx],
+                "observations": observations1,
+                "actions": actions1,
+                "next_observations": next_observations1,
+                "terminals": terminals1,
             }
             tau2 = {
-                "observations": observations2[idx],
-                "actions": actions2[idx],
-                "next_observations": next_observations2[idx],
-                "terminals": terminals2[idx],
+                "observations": observations2,
+                "actions": actions2,
+                "next_observations": next_observations2,
+                "terminals": terminals2,
             }
-            label_idx = label[idx]
-            self.offline_data.append((tau1, tau2, label_idx))
+            self.offline_data.append((tau1, tau2, label))
         
     def statistics(self, eps: float = 1e-3) -> Tuple[np.ndarray, np.ndarray]:
         """Gets mean and std ALL (obs, actions) inputs (from both tau1 and tau2)."""
