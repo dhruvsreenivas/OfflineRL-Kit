@@ -102,7 +102,7 @@ def get_args():
     # online args
     parser.add_argument("--init-exploration-steps", type=int, default=0)
     parser.add_argument("--online-ratio", type=float, default=0.5)
-    parser.add_argument("--dynamics-update-freq", type=int, default=250)
+    parser.add_argument("--dynamics-update-freq", type=int, default=1000)
     parser.add_argument("--add-data-outside-of-model-training", type=bool, default=True)
 
     return parser.parse_args()

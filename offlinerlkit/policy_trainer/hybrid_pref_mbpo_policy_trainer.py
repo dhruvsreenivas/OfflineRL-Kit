@@ -11,7 +11,6 @@ from collections import deque
 from offlinerlkit.buffer import ReplayBuffer, PreferenceDataset
 from offlinerlkit.utils.logger import Logger
 from offlinerlkit.policy import BasePolicy, SACPolicy
-from itertools import count
 
 
 class HybridMBPOPolicyTrainer:
@@ -96,7 +95,7 @@ class HybridMBPOPolicyTrainer:
     def add_online_data(self) -> None:
         """Do initial exploration steps and add to online buffers (both transition + preference)."""
         self.policy.eval()
-        device = self.policy.model.device
+        device = self.policy.reward.model.device
 
         preference_batch = {}
         obs_1, act_1, next_obs_1, term1, obs_2, act_2, next_obs_2, term2, label = [], [], [], [], [], [], [], [], []
