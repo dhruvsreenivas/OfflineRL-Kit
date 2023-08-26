@@ -45,6 +45,7 @@ class HybridMBPOPolicyTrainer:
         discount_snippet_returns: bool = False,
         real_to_mb_ratio: float = 0.05,
         online_ratio: float = 0.5,
+        add_data_outside_of_model_training: bool = True,
         
         # evaluation args
         eval_episodes: int = 10,
@@ -75,6 +76,7 @@ class HybridMBPOPolicyTrainer:
         self._segment_length = self.offline_preference_dataset[0]["observations1"].size(0) # this is of size (seg_length, obs_dim), useful for online dataset collection
         self._real_to_mb_ratio = real_to_mb_ratio
         self._online_ratio = online_ratio
+        self._add_data_outside_of_model_training = add_data_outside_of_model_training
         
         assert isinstance(self.policy, SACPolicy)
         self._gamma = self.policy._gamma if discount_snippet_returns else 1
@@ -109,7 +111,7 @@ class HybridMBPOPolicyTrainer:
             
             # start rolling out
             while True:
-                action = self.policy.select_action(obs.reshape(1, -1), deterministic=True)
+                action = self.policy.select_action(obs.reshape(1, -1), deterministic=False)
                 next_obs, reward, terminal, _ = self.train_env.step(action.flatten())
                 
                 obs_lst.append(obs)
@@ -199,7 +201,7 @@ class HybridMBPOPolicyTrainer:
         """Resizes the model's online replay buffer to account for new model length.
         Does something different from the original MBPO implementation in accordance to what MOPO did.
         """
-        new_buffer_size = self._rollout_batch_size * rollout_length * self._model_retain_epochs,
+        new_buffer_size = self._rollout_batch_size * rollout_length * self._model_retain_epochs
 
         all_samples = self.online_mb_buffer.sample_all()
         new_buffer = ReplayBuffer(
@@ -238,6 +240,7 @@ class HybridMBPOPolicyTrainer:
                 
                 # update the dynamics if necessary
                 if 0 < self._dynamics_update_freq and (num_timesteps + 1) % self._dynamics_update_freq == 0:
+                    self.add_online_data()
                     dynamics_update_info = self.policy.update_dynamics_and_reward(
                         self.offline_buffer,
                         self.online_buffer,
@@ -266,9 +269,10 @@ class HybridMBPOPolicyTrainer:
                         
                         
                 # rollout policy in real env, get reward from learned reward model (as there is nothing else to really do)
-                action = self.policy.select_action(curr_state, deterministic=False)
-                next_state, _, terminal, _ = self.train_env.step(action)
-                self.online_buffer.add(curr_state, next_state, action, 0, terminal)
+                if self._add_data_outside_of_model_training:
+                    action = self.policy.select_action(curr_state, deterministic=False)
+                    next_state, _, terminal, _ = self.train_env.step(action)
+                    self.online_buffer.add(curr_state, next_state, action, 0, terminal)
                 
                 # update the policy with hybrid batch
                 real_batch_size = int(self._real_to_mb_ratio * self._buffer_batch_size)

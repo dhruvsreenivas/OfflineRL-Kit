@@ -103,6 +103,7 @@ def get_args():
     parser.add_argument("--init-exploration-steps", type=int, default=0)
     parser.add_argument("--online-ratio", type=float, default=0.5)
     parser.add_argument("--dynamics-update-freq", type=int, default=250)
+    parser.add_argument("--add-data-outside-of-model-training", type=bool, default=True)
 
     return parser.parse_args()
 
@@ -328,6 +329,7 @@ def train(args=get_args()):
         
         real_to_mb_ratio=args.real_ratio,
         online_ratio=args.online_ratio,
+        add_data_outside_of_model_training=args.add_data_outside_of_model_training,
         eval_episodes=args.eval_episodes,
         lr_scheduler=lr_scheduler,
         dynamics_update_freq=args.dynamics_update_freq
