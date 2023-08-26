@@ -210,7 +210,17 @@ class PreferenceDataset(Dataset):
         del obs1, acts1, obs2, acts2, obs_actions1, obs_actions2, obs_actions
         return mean.cpu().numpy(), std.cpu().numpy()
     
-# =================================== END PREFRENCE ONLY BUFFER ===================================
+def combine(datasets: List[PreferenceDataset]) -> PreferenceDataset:
+    for ds in datasets:
+        assert ds.device == datasets[0].device
+    
+    all_offline_data = []
+    for ds in datasets:
+        all_offline_data.extend(ds.offline_data)
+    
+    return PreferenceDataset(all_offline_data, datasets[0].device)
+    
+# =================================== END PREFERENCE ONLY BUFFER ===================================
 
 def filter(dataset: PreferenceDataset, idxs: list) -> PreferenceDataset:
     dps = [dataset[idx] for idx in idxs]

@@ -17,7 +17,7 @@ from offlinerlkit.dynamics import EnsembleDynamics
 from offlinerlkit.rewards import EnsembleReward
 from offlinerlkit.utils.scaler import StandardScaler
 from offlinerlkit.utils.termination_fns import get_termination_fn, obs_unnormalization
-from offlinerlkit.buffer import ReplayBuffer, PreferenceDataset
+from offlinerlkit.buffer import ReplayBuffer, PreferenceDataset, combine
 from offlinerlkit.utils.logger import Logger, make_log_dirs
 from offlinerlkit.policy_trainer import PrefMBPolicyTrainer
 from offlinerlkit.policy import RAMBORewardLearningPolicy
@@ -40,8 +40,8 @@ walker2d-medium-expert-v2: rollout-length=2, adv-weight=3e-4
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--netid", type=str, default=None)
-    parser.add_argument("--algo-name", type=str, default="rambo_reward_learning")
-    parser.add_argument("--task", type=str, default="halfcheetah-random-v2")
+    parser.add_argument("--env-name", type=str, default="halfcheetah")
+    parser.add_argument("--algo-name", type=str, default="rambo_reward_learning_mixed")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--actor-lr", type=float, default=1e-4)
     parser.add_argument("--critic-lr", type=float, default=3e-4)
@@ -136,15 +136,34 @@ def train(args=get_args()):
     # see if we're doing any using of real batch -- if we are, then break as this is not the experiment we want
     if args.reward_soft_clamp:
         print("yes. this is what we want.")
+    else:
+        print("No, please soft clamp.")
+        return
     
     # get netid
     netid = args.netid if args.netid is not None else getpass.getuser()
-    # create env and dataset
-    env = gym.make(args.task)
-    dataset = d4rl.qlearning_dataset(env)
-    args.obs_shape = env.observation_space.shape
-    args.action_dim = np.prod(env.action_space.shape)
-    args.max_action = env.action_space.high[0]
+    
+    # create envs and grab the datasets
+    datasets = []
+    for task in ["random", "medium", "expert"]:
+        args.task = args.env_name + "-" + task + "-v2"
+        env = gym.make(args.task)
+        dataset = d4rl.qlearning_dataset(env)
+        args.obs_shape = env.observation_space.shape
+        args.action_dim = np.prod(env.action_space.shape)
+        args.max_action = env.action_space.high[0]
+        
+        datasets.append(dataset)
+        
+    # concatenate everything for full dataset
+    keys = list(datasets[0].keys())
+    for ds in datasets:
+        assert list(ds.keys()) == keys
+    
+    full_dataset = {
+        k: np.concatenate([ds[k] for ds in datasets])
+        for k in keys
+    }
 
     # seed
     random.seed(args.seed)
@@ -192,7 +211,9 @@ def train(args=get_args()):
         action_dtype=np.float32,
         device=args.device
     )
-    real_buffer.load_dataset(dataset)
+    real_buffer.load_dataset(full_dataset)
+    
+    # preprocess data
     obs_mean, obs_std = real_buffer.normalize_obs() # ONLY OBSERVATIONS ARE NORMALIZED!
     fake_buffer_size = args.step_per_epoch // args.rollout_freq * args.model_retain_epochs * args.rollout_batch_size * args.rollout_length
     fake_buffer = ReplayBuffer(
@@ -204,8 +225,15 @@ def train(args=get_args()):
         device=args.device
     )
     
-    dataset_path = f"/home/{netid}/OfflineRL-Kit/offline_data/{args.task}_snippet_preference_dataset_seglen{args.segment_length}_deterministic.pt" # here, observations are not normalized
-    pref_dataset = torch.load(dataset_path)
+    # grab preference datasets and combine them
+    pref_datasets = []
+    for task in ["random", "medium", "expert"]:
+        ds_name = args.env_name + "-" + task + "-v2"
+        dataset_path = f"/home/{netid}/OfflineRL-Kit/offline_data/{ds_name}_snippet_preference_dataset_seglen{args.segment_length}_deterministic.pt" # here, observations are not normalized
+        pref_dataset = torch.load(dataset_path)
+        pref_datasets.append(pref_dataset)
+    
+    pref_dataset = combine(pref_datasets)
     pref_dataset.normalize_obs(obs_mean, obs_std) # normalize everything, same scale as regular replay buffer
     pref_dataset.device = args.device
 
@@ -243,7 +271,7 @@ def train(args=get_args()):
         lr=args.dynamics_adv_lr
     )
     dynamics_scaler = StandardScaler()
-    termination_fn = obs_unnormalization(get_termination_fn(task=args.task), obs_mean, obs_std)
+    termination_fn = obs_unnormalization(get_termination_fn(task=args.task), obs_mean, obs_std) # termination function should be the same regardless of datasets.
     dynamics = EnsembleDynamics(
         dynamics_model,
         dynamics_optim,
@@ -311,7 +339,7 @@ def train(args=get_args()):
     ).to(args.device)
     
     # log
-    log_dirs = make_log_dirs(args.task, args.algo_name, args.seed, vars(args))
+    log_dirs = make_log_dirs(args.env_name, args.algo_name, args.seed, vars(args))
     # key: output file name, value: output handler type
     output_config = {
         "consoleout_backup": "stdout",

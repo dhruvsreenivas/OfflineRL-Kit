@@ -4,6 +4,7 @@ from offlinerlkit.policy_trainer.pref_mb_policy_trainer import PrefMBPolicyTrain
 from offlinerlkit.policy_trainer.hybrid_mb_policy_trainer import HybridMBPolicyTrainer
 from offlinerlkit.policy_trainer.hybrid_pref_mb_policy_trainer import HybridPrefMBPolicyTrainer
 from offlinerlkit.policy_trainer.hybrid_pref_mb_policy_mppi_sac_trainer import HybridPrefMBPolicyMppiSacTrainer
+from offlinerlkit.policy_trainer.hybrid_pref_mbpo_policy_trainer import HybridMBPOPolicyTrainer
 
 __all__ = [
     "MFPolicyTrainer",
@@ -12,4 +13,5 @@ __all__ = [
     "HybridMBPolicyTrainer",
     "HybridPrefMBPolicyTrainer",
     "HybridPrefMBPolicyMppiSacTrainer",
+    "HybridMBPOPolicyTrainer"
 ]

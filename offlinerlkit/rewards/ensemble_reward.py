@@ -134,7 +134,7 @@ class EnsembleReward(BaseReward):
             # log
             logger.logkv("loss/reward_train_loss", train_loss)
             logger.logkv("loss/reward_holdout_loss", holdout_loss)
-            logger.logkv("loss/reward_accuracy", val_acc)
+            logger.logkv("loss/reward_holdout_accuracy", val_acc)
             logger.set_timestep(epoch)
             logger.dumpkvs(exclude=["policy_training_progress"])
             

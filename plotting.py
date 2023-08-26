@@ -86,7 +86,7 @@ def plot_multiple_runs(task, algos, runs):
     assert len(runs) == len(algos), "Need one run per algo"
     
     # set up plots
-    fig, ax = plt.subplots(7, 1, sharex='all', figsize=(24, 16)) if "rambo_reward_learning" in algos else plt.subplots(3, 1, sharex='all', figsize=(24, 16))
+    fig, ax = plt.subplots(7, 1, sharex='all', figsize=(30, 30)) if "rambo_reward_learning" in algos else plt.subplots(3, 1, sharex='all', figsize=(24, 16))
     # set title
     fig.suptitle(f"Comparison of different RAMBO-like runs on {task}")
     
@@ -101,7 +101,7 @@ def plot_multiple_runs(task, algos, runs):
         with open(os.path.join(global_dir, run, "record", "hyper_param.json")) as f:
             hparams = json.load(f)
             use_scaler = hparams["use_reward_scaler"] if "use_reward_scaler" in hparams.keys() else True # default RAMBO just uses it throughout
-        lbl = f"{algo}_{'scaled' if use_scaler else 'unscaled'}"
+        lbl = f"{algo}{'' if use_scaler else '_unscaled'}"
         
         ax[0].plot(timesteps, df["eval/normalized_episode_reward"], label=lbl)
         ax[0].fill_between(timesteps, df["eval/normalized_episode_reward"] - df["eval/normalized_episode_reward_std"], df["eval/normalized_episode_reward"] + df["eval/normalized_episode_reward_std"])
@@ -153,9 +153,9 @@ def plot_multiple_runs(task, algos, runs):
         plt.savefig(f"{plot_dir}/progress_plot.jpg")
     
 if __name__ == "__main__":
-    task = 'walker2d-medium-v2'
-    algos = ['rambo', 'rambo_relabeled', 'rambo_reward_learning']
-    runs = ['seed_0&timestamp_23-0720-222236', 'seed_0&timestamp_23-0729-174629', 'seed_0&timestamp_23-0803-084312']
+    # task = 'halfcheetah-medium-v2'
+    # algos = ['rambo', 'rambo_relabeled', 'rambo_reward_learning']
+    # runs = ['seed_0&timestamp_23-0715-110036', 'seed_0&timestamp_23-0716-170644', 'seed_0&timestamp_23-0811-202113']
     
-    plot_multiple_runs(task, algos, runs)
-    # plot_data(get_plot_args())
+    # plot_multiple_runs(task, algos, runs)
+    plot_data(get_plot_args())

@@ -188,13 +188,6 @@ class HybridRAMBORewardLearningPolicy(MOPOPolicy):
                 if steps == 1000:
                     break
         
-        # log counts
-        # c_d, c_pi, c_eq = self.count
-        # print(f"ratio of v_dataset > v_pi is {c_d / (c_d + c_pi)}")
-        # print(f"number of larger v_dataset is {c_d}")
-        # print(f"number of larger v_pi is {c_pi}")
-        # print(f"number of tie is {c_eq}")
-        
         # go back to eval mode for rollout
         self.dynamics.model.eval()
         self.reward.model.eval()

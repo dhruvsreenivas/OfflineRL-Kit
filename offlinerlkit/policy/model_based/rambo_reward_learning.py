@@ -44,6 +44,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         adv_dynamics_loss_coef: float = 1.0,
         adv_reward_loss_coef: float = 1.0,
         sl_reward_loss_coef: float = 1.0,
+        num_reward_updates: int = 1,
         reward_batch_size: int = 20,
         adv_rollout_length: int = 5,
         include_ent_in_adv: bool = False,
@@ -76,6 +77,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         self._adv_dynamics_loss_coef = adv_dynamics_loss_coef
         self._sl_reward_loss_coef = sl_reward_loss_coef
         self._adv_reward_loss_coef = adv_reward_loss_coef
+        self._num_reward_updates = num_reward_updates
         self._include_ent_in_adv = include_ent_in_adv
         self._use_real_batch_in_policy_update = use_real_batch_in_policy_update
         self.scaler = scaler
@@ -169,13 +171,6 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
                     # break
                 if steps == 1000:
                     break
-        
-        # log counts
-        # c_d, c_pi, c_eq = self.count
-        # print(f"ratio of v_dataset > v_pi is {c_d / (c_d + c_pi)}")
-        # print(f"number of larger v_dataset is {c_d}")
-        # print(f"number of larger v_pi is {c_pi}")
-        # print(f"number of tie is {c_eq}")
         
         # go back to eval mode for rollout
         self.dynamics.model.eval()
@@ -281,6 +276,11 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         # =================== Supervised loss here (MLE of the dynamics + the reward BCE loss) ===================
 
         # compute the supervised loss
+        if self._sl_dynamics_loss_coef < 0.01:
+            sl_observations = sl_observations.to(dtype=torch.float64)
+            sl_actions = sl_actions.to(dtype=torch.float64)
+            self.dynamics.model.to(dtype=torch.float64)
+        
         sl_input = torch.cat([sl_observations, sl_actions], dim=-1).cpu().numpy()
         sl_target = sl_next_observations - sl_observations # we're only computing s' - s here, no reward term!
         sl_input = self.dynamics.scaler.transform(sl_input)
@@ -298,6 +298,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         sl_loss_reward = self.reward_loss(preference_batch, normalize_input)
         sl_loss = self._sl_dynamics_loss_coef * sl_loss_dynamics + self._sl_reward_loss_coef * sl_loss_reward
         
+        # combine all losses (adv + supervised)
         all_loss = self._adv_weight * adv_loss + sl_loss
         
         # optimization
@@ -306,6 +307,12 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         all_loss.backward()
         self._dynamics_adv_optim.step()
         self._reward_adv_optim.step()
+        
+        # convert back to float32
+        if self._sl_dynamics_loss_coef < 0.01:
+            sl_observations = sl_observations.to(dtype=torch.float32)
+            sl_actions = sl_actions.to(dtype=torch.float32)
+            self.dynamics.model.to(dtype=torch.float32)
         
         # log
         info_dict = {
@@ -418,7 +425,9 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
             batch = {"real": real_batch, "fake": fake_batch}
             return super().learn(batch)
         else:
-            super().learn(fake_batch)
+            # only learn on fake batch -- for MOPO to work basically do {"real": fake_batch}
+            supposed_real_batch = {"real": fake_batch}
+            return super().learn(supposed_real_batch)
     
     
     # ====== debug functions ======

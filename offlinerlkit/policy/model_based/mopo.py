@@ -80,9 +80,9 @@ class MOPOPolicy(SACPolicy):
 
     def learn(self, batch: Dict) -> Dict[str, float]:
         if "fake" in batch:
-                real_batch, fake_batch = batch["real"], batch["fake"]
-                mix_batch = {k: torch.cat([real_batch[k], fake_batch[k]], 0) for k in real_batch.keys()}
-                return super().learn(mix_batch)
+            real_batch, fake_batch = batch["real"], batch["fake"]
+            mix_batch = {k: torch.cat([real_batch[k], fake_batch[k]], 0) for k in real_batch.keys()}
+            return super().learn(mix_batch)
         else:
             return super().learn(batch["real"])
 

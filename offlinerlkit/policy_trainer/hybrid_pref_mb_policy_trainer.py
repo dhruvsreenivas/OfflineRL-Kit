@@ -36,6 +36,7 @@ class HybridPrefMBPolicyTrainer:
         gamma: float = 1.0,
         segment_length: float = 60,
     ) -> None:
+        """Hybrid preference-based model-based RL trainer."""
         self.policy = policy
         self.eval_env = eval_env
         self.offline_preference_dataset = offline_preference_dataset
@@ -100,6 +101,7 @@ class HybridPrefMBPolicyTrainer:
                         preference_batch_size=self.policy._online_preference_ratio * self.policy._reward_batch_size,
                         segment_length=self.segment_length, 
                         device=self.offline_preference_dataset.sample(1)['observations1'].device)
+                    
                     dynamics_update_info = self.policy.update_dynamics_and_reward(self.real_buffer, self.online_buffer, self.offline_preference_dataset, self.online_preference_dataset)
                     for k, v in dynamics_update_info.items():
                         self.logger.logkv_mean(k, v)
@@ -161,9 +163,10 @@ class HybridPrefMBPolicyTrainer:
             "eval/episode_length": [ep_info["episode_length"] for ep_info in eval_ep_info_buffer]
         }
     
-    def _add_online_data(self, preference_batch_size, segment_length, device) -> Dict[str, torch.tensor]:
+    def _add_online_data(self, preference_batch_size, segment_length, device) -> Dict[str, torch.Tensor]:
         # collect 2 * batch_size trajectories in total. If collected trajectory is smaller than segment size, recollect. 
         # Add all data to self.online_buffer. Return online preference dataset with size of preference_batch_size.
+        
         self.policy.eval()
         obs = self.eval_env.reset()
         preference_batch = {}
@@ -212,9 +215,10 @@ class HybridPrefMBPolicyTrainer:
                     reward_lst = torch.tensor(reward_lst, device=device)
                     term_lst = torch.tensor(term_lst, device=device)
 
-                    # if trajectory length is smaller than segment lenght, resample a trajectory
+                    # if trajectory length is smaller than segment length, resample a trajectory
                     if obs_lst.shape[0] < segment_length:
                         break
+                    
                     # sample segment from the history and compute the reward
                     start_idx = torch.randint(0, obs_lst.shape[0] - segment_length, (1,)) if obs_lst.shape[0] > segment_length else 0
                     if traj == 0: # collected the first trajectory, need to collect a second one for comparison
@@ -242,6 +246,7 @@ class HybridPrefMBPolicyTrainer:
                         traj = 0
                         current_batch_size += 1 # finish collecting two trajectories and the label
                     break
+        
         # stack observations into size (online_buffer_size, obs_dim)
         preference_batch["observations1"] = torch.stack(obs_1, dim=0).squeeze()
         preference_batch["actions1"] = torch.stack(act_1, dim=0).squeeze()
