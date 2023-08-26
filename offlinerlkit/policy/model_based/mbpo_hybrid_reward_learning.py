@@ -32,7 +32,6 @@ class HybridMBPORewardLearningPolicy(SACPolicy):
         tau: float = 0.005,
         gamma: float  = 0.99,
         alpha: Union[float, Tuple[float, torch.Tensor, torch.optim.Optimizer]] = 0.2,
-        mdp_update_steps: int = 1,
         online_batch_size: int = 256,
         online_pref_batch_size: int = 256,
         online_to_total_ratio: float = 0.5
@@ -53,7 +52,6 @@ class HybridMBPORewardLearningPolicy(SACPolicy):
         self.dynamics_optim = dynamics_optim
         self.reward_optim = reward_optim
         
-        self.mdp_update_steps = mdp_update_steps
         self.online_batch_size = online_batch_size
         self.online_pref_batch_size = online_pref_batch_size
         self.online_to_total_ratio = online_to_total_ratio
@@ -200,7 +198,7 @@ class HybridMBPORewardLearningPolicy(SACPolicy):
         offline_pref_dataset: PreferenceDataset,
         online_pref_dataset: PreferenceDataset
     ) -> Tuple[Dict[str, np.ndarray], Dict]:
-        """Updates both the dynamics and the reward (i.e. whole world model) in one update step."""
+        """Updates both the dynamics and the reward (i.e. whole world model) over some number of update steps."""
         
         all_loss_info = {
             "dynamics_update/mse_loss": 0, 
@@ -209,7 +207,8 @@ class HybridMBPORewardLearningPolicy(SACPolicy):
         self.dynamics.model.train()
         self.reward.model.train()
         
-        for _ in range(self.mdp_update_steps):
+        num_update_steps = online_buffer._size // self.online_batch_size
+        for _ in range(num_update_steps):
             online_batch = online_buffer.sample(self.online_batch_size)
             offline_batch = offline_buffer.sample(self.online_batch_size * int(1 / self.online_to_total_ratio - 1))
             online_pref_batch = online_pref_dataset.sample(self.online_pref_batch_size)
@@ -227,4 +226,4 @@ class HybridMBPORewardLearningPolicy(SACPolicy):
         
         self.dynamics.model.eval()
         self.reward.model.eval()
-        return {_key: _value/self.mdp_update_steps for _key, _value in all_loss_info.items()}
+        return {_key: _value / num_update_steps for _key, _value in all_loss_info.items()}

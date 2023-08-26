@@ -47,7 +47,7 @@ def get_args():
     parser.add_argument("--netid", type=str, default=None)
     parser.add_argument("--algo-name", type=str, default="hybrid_pref_mbpo")
     parser.add_argument("--task", type=str, default="halfcheetah-medium-v2")
-    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--actor-lr", type=float, default=1e-4)
     parser.add_argument("--critic-lr", type=float, default=3e-4)
     parser.add_argument("--hidden-dims", type=int, nargs='*', default=[256, 256])
@@ -256,7 +256,9 @@ def train(args=get_args()):
         reward_optim,
         tau=args.tau,
         gamma=args.gamma,
-        alpha=alpha
+        alpha=alpha,
+        online_batch_size=args.batch_size,
+        online_to_total_ratio=args.online_ratio
     )
 
     # create buffer
