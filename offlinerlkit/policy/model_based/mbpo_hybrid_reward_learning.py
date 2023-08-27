@@ -73,6 +73,8 @@ class HybridMBPORewardLearningPolicy(SACPolicy):
         for _ in range(rollout_length):
             actions = self.select_action(observations)
             next_observations, rewards, terminals, info = self.dynamics.step(observations, actions)
+            if rewards is None:
+                rewards = self.reward.get_reward(observations, actions)
             rollout_transitions["obss"].append(observations)
             rollout_transitions["next_obss"].append(next_observations)
             rollout_transitions["actions"].append(actions)
@@ -159,7 +161,7 @@ class HybridMBPORewardLearningPolicy(SACPolicy):
         batch: Tuple[np.ndarray, np.ndarray, np.ndarray]
     ) -> Dict[str, float]:
         """Updates the dynamics model(s) on a batch of real data (can be hybrid)."""
-        observations, actions, next_observations = batch
+        observations, actions, next_observations = batch["observations"], batch["actions"], batch["next_observations"]
         
         # compute loss
         obs_act = np.concatenate([observations, actions], axis=-1)
@@ -168,14 +170,16 @@ class HybridMBPORewardLearningPolicy(SACPolicy):
         diff_actual = torch.from_numpy(next_observations - observations).to(diff_mean.device)
         
         inv_var = torch.exp(-logvar)
-        mse_loss = (torch.pow(diff_mean - diff_actual, 2) * inv_var).mean(dim=(1, 2))
+        mse_loss_inv = (torch.pow(diff_mean - diff_actual, 2) * inv_var).mean(dim=(1, 2))
+        var_loss = logvar.mean(dim=(1, 2))
+        loss = mse_loss_inv.sum() + var_loss.sum()
         
         # optimize
         self.dynamics_optim.zero_grad()
-        mse_loss.backward()
+        loss.backward()
         self.dynamics_optim.step()
         
-        return {"dynamics_update/mse_loss": mse_loss.detach().cpu().item()}
+        return {"dynamics_update/mse_loss_inv": mse_loss_inv.sum().detach().cpu().item(), "dynamics_update/var_loss": var_loss.sum().detach().cpu().item()}
         
         
     def update_reward(
@@ -204,7 +208,8 @@ class HybridMBPORewardLearningPolicy(SACPolicy):
         """Updates both the dynamics and the reward (i.e. whole world model) over some number of update steps."""
         
         all_loss_info = {
-            "dynamics_update/mse_loss": 0, 
+            "dynamics_update/mse_loss_inv": 0,
+            "dynamics_update/var_loss": 0,
             "reward_update/bce_loss": 0
         }
         self.dynamics.model.train()

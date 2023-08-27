@@ -96,7 +96,7 @@ class ReplayBuffer:
         return obs_mean, obs_std
 
     def sample(self, batch_size: int) -> Dict[str, torch.Tensor]:
-
+        
         batch_indexes = np.random.randint(0, self._size, size=batch_size)
         
         return {

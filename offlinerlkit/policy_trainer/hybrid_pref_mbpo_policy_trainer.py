@@ -205,7 +205,7 @@ class HybridMBPOPolicyTrainer:
         """Resizes the model's online replay buffer to account for new model length.
         Does something different from the original MBPO implementation in accordance to what MOPO did.
         """
-        new_buffer_size = self._rollout_batch_size * rollout_length * self._model_retain_epochs
+        new_buffer_size = int(self._rollout_batch_size * rollout_length * self._model_retain_epochs)
 
         all_samples = self.online_mb_buffer.sample_all()
         new_buffer = ReplayBuffer(
@@ -281,7 +281,7 @@ class HybridMBPOPolicyTrainer:
                 # update the policy with hybrid batch
                 real_batch_size = int(self._real_to_mb_ratio * self._buffer_batch_size)
                 model_batch_size = self._buffer_batch_size - real_batch_size
-                offline_batch_size = self._online_ratio * self._buffer_batch_size
+                offline_batch_size = int(self._online_ratio * self._buffer_batch_size)
                 
                 online_batch = self.online_buffer.sample(real_batch_size)
                 offline_batch = self.offline_buffer.sample(offline_batch_size)
