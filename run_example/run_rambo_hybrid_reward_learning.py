@@ -346,15 +346,6 @@ def train(args=get_args()):
         gamma=args.gamma,
         segment_length=args.segment_length
     )
-    
-    # pretrain policy
-    if args.load_bc_path:
-        policy.load(args.load_bc_path)
-        policy.to(args.device)
-    else:
-        policy.train()
-        dataset = {"real": dataset}
-        policy.learn(dataset)
 
     # train pure dynamics
     if args.load_dynamics_path:
@@ -370,7 +361,17 @@ def train(args=get_args()):
             max_epochs_since_update=10
         )
         # sets dynamics scaler here, so have stats for reward
-    
+
+    # pretrain policy
+    if args.load_bc_path:
+        policy.load(args.load_bc_path)
+        policy.to(args.device)
+    else:
+        policy.train()
+        real_batch = real_buffer.sample(batch_size=args.batch_size)
+        dataset = {"real": real_batch}
+        policy.learn(dataset)
+        
     # train reward model if needed (using dynamics scaler!!!)
     if not args.load_reward_path:
         reward.train(

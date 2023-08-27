@@ -416,17 +416,31 @@ class HybridRAMBORewardLearningPolicy(MOPOPolicy):
         return super().select_action(obs, deterministic)
     
     def learn(self, batch: Dict) -> Dict[str, float]:
-        real_batch, fake_batch = batch["real"], batch["fake"]
+        if "fake" in batch:
+            fake_batch = batch["fake"]
+        if "real" in batch:
+            real_batch = batch["real"]
+            # replace real rewards with what our reward model predicts
+            old_reward_shape = real_batch["rewards"].shape
+            pred_rewards = self.reward.get_reward(real_batch["observations"], real_batch["actions"])
+            real_batch["rewards"] = torch.from_numpy(pred_rewards).to(self.device)
+
+            assert real_batch["rewards"].shape == old_reward_shape, "wrong reward shape!"
         
-        # replace real rewards with what our reward model predicts
-        old_reward_shape = real_batch["rewards"].shape
-        pred_rewards = self.reward.get_reward(real_batch["observations"], real_batch["actions"])
-        real_batch["rewards"] = torch.from_numpy(pred_rewards).to(fake_batch["rewards"].device)
-        assert real_batch["rewards"].shape == old_reward_shape, "wrong reward shape!"
-        
+            # transfer to tensors if needed
+            for key in real_batch:
+                if isinstance(real_batch[key], np.ndarray):
+                    real_batch[key] = torch.from_numpy(real_batch[key]).to(self.device)
+            real_batch['terminals'] = real_batch['terminals'].int()
+            
         # now learn on the real batch + fake batch
-        batch = {"real": real_batch, "fake": fake_batch}
-        return super().learn(batch)
+        final_batch = {}
+        if "fake" in batch:
+            final_batch["fake"] = fake_batch
+        if "real" in batch:
+            final_batch["real"] = real_batch
+
+        return super().learn(final_batch)
     
     
     # ====== debug functions ======

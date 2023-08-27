@@ -10,14 +10,14 @@ from tqdm import tqdm
 from collections import deque
 from offlinerlkit.buffer import ReplayBuffer, PreferenceDataset
 from offlinerlkit.utils.logger import Logger
-from offlinerlkit.policy import BasePolicy
+from offlinerlkit.policy import HybridMBPORewardLearningPolicy
 
 
 # model-based policy trainer with preference-based reward learning
 class HybridPrefMBPolicyTrainer:
     def __init__(
         self,
-        policy: BasePolicy,
+        policy: HybridMBPORewardLearningPolicy,
         eval_env: gym.Env,
         offline_preference_dataset: PreferenceDataset,
         online_preference_dataset: PreferenceDataset,
