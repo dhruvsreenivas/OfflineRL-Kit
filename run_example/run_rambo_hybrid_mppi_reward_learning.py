@@ -40,7 +40,7 @@ walker2d-medium-expert-v2: rollout-length=2, adv-weight=3e-4
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--netid", type=str, default=None)
-    parser.add_argument("--algo-name", type=str, default="rambo_hybrid_reward_learning")
+    parser.add_argument("--algo-name", type=str, default="rambo_hybrid_mppi_reward_learning")
     parser.add_argument("--task", type=str, default="halfcheetah-random-v2")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--actor-lr", type=float, default=1e-4)
@@ -65,9 +65,9 @@ def get_args():
     parser.add_argument("--adv-batch-size", type=int, default=256)
     parser.add_argument("--rollout-batch-size", type=int, default=50000)
     parser.add_argument("--rollout-length", type=int, default=5)
-    parser.add_argument("--adv-weight", type=float, default=0.0)
+    parser.add_argument("--adv-weight", type=float, default=3e-4)
     parser.add_argument("--model-retain-epochs", type=int, default=5)
-    parser.add_argument("--real-ratio", type=float, default=0.0)
+    parser.add_argument("--real-ratio", type=float, default=0.5)
     parser.add_argument("--load-dynamics-path", type=str, default=None)
     parser.add_argument("--max-dynamics-pretrain-epochs", type=int, default=500)
 
@@ -368,8 +368,11 @@ def train(args=get_args()):
         policy.to(args.device)
     else:
         policy.train()
-        dataset = {"real": dataset, "fake": {}}
+        real_batch = real_buffer.sample(batch_size=args.batch_size)
+        dataset = {"real": real_batch}
         policy.learn(dataset)
+        import os
+        torch.save(policy.state_dict(), os.path.join(logger.model_dir, "rambo_reward_learn_pretrain.pth"))
     
     # train reward model if needed (using dynamics scaler!!!)
     if not args.load_reward_path:

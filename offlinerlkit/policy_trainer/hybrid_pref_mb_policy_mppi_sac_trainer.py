@@ -35,8 +35,8 @@ class HybridPrefMBPolicyMppiSacTrainer:
         dynamics_update_freq: int = 0,
         gamma: float = 1.0,
         segment_length: float = 60,
-        n_samples: int = 25,
-        timesteps: int = 20,
+        n_samples: int = 5,
+        timesteps: int = 3,
         noise_mu: float = 0,
         noise_std: float = 1,
         lambda_: float = 1,
@@ -176,7 +176,7 @@ class HybridPrefMBPolicyMppiSacTrainer:
     def _add_online_data(self, preference_batch_size, segment_length, device) -> Dict[str, torch.tensor]:
         # collect 2 * batch_size trajectories in total. If collected trajectory is smaller than segment size, recollect. 
         # Add all data to self.online_buffer. Return online preference dataset with size of preference_batch_size.
-        self.policy.eval()
+        # self.policy.eval()
         obs = self.eval_env.reset()
         preference_batch = {}
         obs_1, act_1, next_obs_1, term1, obs_2, act_2, next_obs_2, term2, label = [], [], [], [], [], [], [], [], []
@@ -184,11 +184,12 @@ class HybridPrefMBPolicyMppiSacTrainer:
 
         traj = 0
         reward_1, reward_2 = 0, 0
+        progress_bar = tqdm(total=preference_batch_size)
         while current_batch_size < preference_batch_size:
             obs = self.eval_env.reset()
             obs_lst, act_lst, next_obs_lst, reward_lst, term_lst = [], [], [], [], []
             while True:
-                action = self.policy.select_action(obs.reshape(1, -1), deterministic=True)
+                action = self.get_action(obs.reshape(1, -1))
                 next_obs, reward, terminal, _ = self.eval_env.step(action.flatten())
                 
                 obs_lst.append(obs)
@@ -253,7 +254,9 @@ class HybridPrefMBPolicyMppiSacTrainer:
                             label.append(torch.tensor(0, device=device))
                         traj = 0
                         current_batch_size += 1 # finish collecting two trajectories and the label
+                        progress_bar.update(1)
                     break
+        progress_bar.close()
         # stack observations into size (online_buffer_size, obs_dim)
         preference_batch["observations1"] = torch.stack(obs_1, dim=0).squeeze()
         preference_batch["actions1"] = torch.stack(act_1, dim=0).squeeze()
