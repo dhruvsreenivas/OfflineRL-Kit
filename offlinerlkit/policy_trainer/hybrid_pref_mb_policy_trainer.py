@@ -35,7 +35,8 @@ class HybridPrefMBPolicyTrainer:
         dynamics_update_freq: int = 0,
         gamma: float = 1.0,
         segment_length: float = 60,
-        device: str = 'cpu'
+        device: str = 'cpu',
+        num_online_preference_batch_size: int = 1,
     ) -> None:
         """Hybrid preference-based model-based RL trainer."""
         self.policy = policy
@@ -60,6 +61,7 @@ class HybridPrefMBPolicyTrainer:
         self.gamma = gamma
         self.segment_length = segment_length
         self.device = device
+        self._num_online_preference_batch_size = num_online_preference_batch_size
 
     def train(self) -> Dict[str, float]:
         start_time = time.time()
@@ -100,7 +102,7 @@ class HybridPrefMBPolicyTrainer:
                 # update the dynamics if necessary
                 if 0 < self._dynamics_update_freq and (num_timesteps+1)%self._dynamics_update_freq == 0:
                     self._add_online_data(
-                        preference_batch_size=self.policy._online_preference_ratio * self.policy._reward_batch_size,
+                        preference_batch_size=self._num_online_preference_batch_size,
                         segment_length=self.segment_length, 
                         device=self.device
                     )

@@ -1,19 +1,14 @@
 import numpy as np
 import torch
 import torch.nn as nn
-import gym
-import os
 
-from torch.nn import functional as F
 from typing import Dict, Union, Tuple
-from collections import defaultdict
 from operator import itemgetter
 from offlinerlkit.utils.scaler import StandardScaler
-from offlinerlkit.policy import MOPOPolicy
 from offlinerlkit.dynamics import BaseDynamics
 from offlinerlkit.rewards import BaseReward
-from offlinerlkit.utils.losses import ensemble_cross_entropy
 from offlinerlkit.policy.model_based.rambo_reward_learning import RAMBORewardLearningPolicy
+from offlinerlkit.buffer import ReplayBuffer, PreferenceDataset
 
 
 class HybridRAMBORewardLearningPolicy(RAMBORewardLearningPolicy):
@@ -87,10 +82,10 @@ class HybridRAMBORewardLearningPolicy(RAMBORewardLearningPolicy):
 
     def update_dynamics_and_reward(
         self,
-        offline_transition_buffer,
-        online_transition_buffer,
-        offline_preference_buffer,
-        online_preference_buffer,
+        offline_transition_buffer: ReplayBuffer,
+        online_transition_buffer: ReplayBuffer,
+        offline_preference_buffer: PreferenceDataset,
+        online_preference_buffer: PreferenceDataset,
     ) -> Tuple[Dict[str, np.ndarray], Dict]:
         all_loss_info = {
             "adv_dynamics_update/all_loss": 0, 
@@ -121,7 +116,7 @@ class HybridRAMBORewardLearningPolicy(RAMBORewardLearningPolicy):
                 actions = super().select_action(observations)
 
                 # get sl data
-                online_buffer_size = int(self._adv_rollout_batch_size * self._online_transition_ratio)
+                online_buffer_size = min(online_transition_buffer._size, int(self._adv_rollout_batch_size * self._online_transition_ratio))
                 offline_buffer_size = self._adv_rollout_batch_size - online_buffer_size
                 offline_observations, offline_actions, offline_next_observations = \
                     itemgetter("observations", "actions", "next_observations")(offline_transition_buffer.sample(offline_buffer_size))
@@ -133,7 +128,7 @@ class HybridRAMBORewardLearningPolicy(RAMBORewardLearningPolicy):
                 sl_next_observations = torch.cat((online_next_observations, offline_next_observations), dim=0)
 
                 # mix online preference buffer and offline preference buffe
-                online_preference_batch_size = int(self._reward_batch_size * self._online_preference_ratio)
+                online_preference_batch_size = min(len(online_preference_buffer), int(self._reward_batch_size * self._online_preference_ratio))
                 offline_preference_batch_size = self._reward_batch_size - online_preference_batch_size
                 online_preference_batch = online_preference_buffer.sample(online_preference_batch_size)
                 offline_preference_batch = offline_preference_buffer.sample(offline_preference_batch_size)
