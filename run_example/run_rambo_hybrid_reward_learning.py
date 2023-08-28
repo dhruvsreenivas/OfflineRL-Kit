@@ -108,8 +108,8 @@ def get_args():
 
     parser.add_argument("--load-std-path", type=str, default=None) # load dynamics std path (for ant env)
     parser.add_argument("--fix-logvar-range", type=bool, default=False) # fixed min and max logvar for dynamics
-    parser.add_argument("--online-ratio", type=float, default=0.5)
-    parser.add_argument("--online-preference-ratio", type=float, default=0.5)
+    parser.add_argument("--online_transition_ratio", type=float, default=0.5)
+    parser.add_argument("--online_preference_ratio", type=float, default=0.5)
     return parser.parse_args()
 
 
@@ -307,7 +307,7 @@ def train(args=get_args()):
         sl_reward_loss_coef=args.sl_reward_coef,
         include_ent_in_adv=args.include_ent_in_adv,
         scaler=policy_scaler,
-        online_ratio=args.online_ratio,
+        online_transition_ratio=args.online_transition_ratio,
         online_preference_ratio=args.online_preference_ratio,
         device=args.device
     ).to(args.device)

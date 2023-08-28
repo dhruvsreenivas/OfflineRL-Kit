@@ -44,7 +44,6 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         adv_dynamics_loss_coef: float = 1.0,
         adv_reward_loss_coef: float = 1.0,
         sl_reward_loss_coef: float = 1.0,
-        num_reward_updates: int = 1,
         reward_batch_size: int = 20,
         adv_rollout_length: int = 5,
         include_ent_in_adv: bool = False,
@@ -71,13 +70,12 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         self._adv_weight = adv_weight
         self._adv_train_steps = adv_train_steps
         self._adv_rollout_batch_size = adv_rollout_batch_size
-        self._reward_batch_size = reward_batch_size
-        self._adv_rollout_length = adv_rollout_length
         self._sl_dynamics_loss_coef = sl_dynamics_loss_coef
         self._adv_dynamics_loss_coef = adv_dynamics_loss_coef
-        self._sl_reward_loss_coef = sl_reward_loss_coef
         self._adv_reward_loss_coef = adv_reward_loss_coef
-        self._num_reward_updates = num_reward_updates
+        self._sl_reward_loss_coef = sl_reward_loss_coef
+        self._reward_batch_size = reward_batch_size
+        self._adv_rollout_length = adv_rollout_length
         self._include_ent_in_adv = include_ent_in_adv
         self._use_real_batch_in_policy_update = use_real_batch_in_policy_update
         self.scaler = scaler
@@ -119,7 +117,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
 
     def update_dynamics_and_reward(
         self,
-        real_buffer,
+        transition_buffer,
         preference_buffer
     ) -> Tuple[Dict[str, np.ndarray], Dict]:
         all_loss_info = {
@@ -144,7 +142,7 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         steps = 0
         while steps < self._adv_train_steps:
             # select initial states to roll out from
-            init_obss = real_buffer.sample(self._adv_rollout_batch_size)["observations"].cpu().numpy() # this is normalized, as buffer is normalized before training.
+            init_obss = transition_buffer.sample(self._adv_rollout_batch_size)["observations"].cpu().numpy() # this is normalized, as buffer is normalized before training.
             observations = init_obss
             for t in range(self._adv_rollout_length):
                 # get policy actions
@@ -152,12 +150,12 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
                 
                 # real observations
                 sl_observations, sl_actions, sl_next_observations = \
-                    itemgetter("observations", "actions", "next_observations")(real_buffer.sample(self._adv_rollout_batch_size)) # again, inputs are all normalized
+                    itemgetter("observations", "actions", "next_observations")(transition_buffer.sample(self._adv_rollout_batch_size)) # again, inputs are all normalized
                     
                 # gather new batch of offline data and update the model
-                offline_batch = (observations, actions, sl_observations, sl_actions, sl_next_observations)
+                transition_batch = (observations, actions, sl_observations, sl_actions, sl_next_observations)
                 preference_batch = preference_buffer.sample(self._reward_batch_size) # unnormalized
-                next_observations, terminals, loss_info = self.dynamics_step_and_forward(offline_batch, preference_batch)
+                next_observations, terminals, loss_info = self.dynamics_step_and_forward(transition_batch, preference_batch)
                 for _key in loss_info:
                     if 'reward_max' in _key or 'reward_min' in _key:
                         all_loss_info[_key] = loss_info[_key]
@@ -179,10 +177,10 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
 
     def dynamics_step_and_forward(
         self,
-        offline_batch: Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+        transition_batch: Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
         preference_batch: Dict[str, torch.Tensor]
     ):
-        observations, actions, sl_observations, sl_actions, sl_next_observations = offline_batch
+        observations, actions, sl_observations, sl_actions, sl_next_observations = transition_batch
         
         # scale
         obs_act = np.concatenate([observations, actions], axis=-1)
@@ -412,23 +410,18 @@ class RAMBORewardLearningPolicy(MOPOPolicy):
         return super().select_action(obs, deterministic)
     
     def learn(self, batch: Dict) -> Dict[str, float]:
-        real_batch, fake_batch = batch["real"], batch["fake"]
-        
-        if self._use_real_batch_in_policy_update:
-            # replace real rewards with what our reward model predicts
+        final_batch = {}
+        if "real" in batch and self._use_real_batch_in_policy_update:
+            real_batch = batch["real"]
             old_reward_shape = real_batch["rewards"].shape
             pred_rewards = self.reward.get_reward(real_batch["observations"], real_batch["actions"])
-            real_batch["rewards"] = torch.from_numpy(pred_rewards).to(fake_batch["rewards"].device)
+            real_batch["rewards"] = torch.from_numpy(pred_rewards).to(self.device)
             assert real_batch["rewards"].shape == old_reward_shape, "wrong reward shape!"
+            final_batch["real"] = real_batch
+        if "fake" in batch:
+            final_batch["fake"] = batch["fake"]
             
-            # now learn on the real batch + fake batch
-            batch = {"real": real_batch, "fake": fake_batch}
-            return super().learn(batch)
-        else:
-            # only learn on fake batch -- for MOPO to work basically do {"real": fake_batch}
-            supposed_real_batch = {"real": fake_batch}
-            return super().learn(supposed_real_batch)
-    
+        return super().learn(batch)
     
     # ====== debug functions ======
     
