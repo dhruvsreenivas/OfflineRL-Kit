@@ -325,7 +325,7 @@ def train(args=get_args()):
     logger = Logger(log_dirs, output_config)
     logger.log_hyperparameters(vars(args))
     
-    online_preference_dataset = PreferenceDataset(offline_data=[], device=pref_dataset.device)
+    online_preference_dataset = PreferenceDataset(offline_data=[], device=args.device)
     # create policy trainer
     policy_trainer = HybridPrefMBPolicyTrainer(
         policy=policy,
@@ -344,7 +344,8 @@ def train(args=get_args()):
         eval_episodes=args.eval_episodes,
         real_ratio=args.real_ratio,
         gamma=args.gamma,
-        segment_length=args.segment_length
+        segment_length=args.segment_length,
+        device=args.device
     )
 
     # train pure dynamics
@@ -382,7 +383,7 @@ def train(args=get_args()):
             batch_size=args.reward_batch_size
         )
     
-    validate_reward_model(reward, pref_dataset)
+    # validate_reward_model(reward, pref_dataset)
 
     # train policy
     policy_trainer.train()

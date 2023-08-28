@@ -87,8 +87,8 @@ class HybridRAMBORewardLearningPolicy(RAMBORewardLearningPolicy):
 
     def update_dynamics_and_reward(
         self,
-        real_buffer,
-        online_buffer,
+        offline_transition_buffer,
+        online_transition_buffer,
         offline_preference_buffer,
         online_preference_buffer,
     ) -> Tuple[Dict[str, np.ndarray], Dict]:
@@ -114,7 +114,7 @@ class HybridRAMBORewardLearningPolicy(RAMBORewardLearningPolicy):
         steps = 0
         while steps < self._adv_train_steps:
             # select initial states to roll out from
-            init_obss = real_buffer.sample(self._adv_rollout_batch_size)["observations"].cpu().numpy() # this is normalized, as buffer is normalized before training.
+            init_obss = offline_transition_buffer.sample(self._adv_rollout_batch_size)["observations"].cpu().numpy() # this is normalized, as buffer is normalized before training.
             observations = init_obss
             for t in range(self._adv_rollout_length):
                 # get policy actions
@@ -124,9 +124,9 @@ class HybridRAMBORewardLearningPolicy(RAMBORewardLearningPolicy):
                 online_buffer_size = int(self._adv_rollout_batch_size * self._online_transition_ratio)
                 offline_buffer_size = self._adv_rollout_batch_size - online_buffer_size
                 offline_observations, offline_actions, offline_next_observations = \
-                    itemgetter("observations", "actions", "next_observations")(real_buffer.sample(offline_buffer_size))
+                    itemgetter("observations", "actions", "next_observations")(offline_transition_buffer.sample(offline_buffer_size))
                 online_observations, online_actions, online_next_observations = \
-                    itemgetter("observations", "actions", "next_observations")(online_buffer.sample(online_buffer_size))
+                    itemgetter("observations", "actions", "next_observations")(online_transition_buffer.sample(online_buffer_size))
                 # mix online data with offline data
                 sl_observations = torch.cat((online_observations, offline_observations), dim=0)
                 sl_actions = torch.cat((online_actions, offline_actions), dim=0)
@@ -141,7 +141,7 @@ class HybridRAMBORewardLearningPolicy(RAMBORewardLearningPolicy):
 
                 # gather new batch of mixed data and update the model (here we sample from both transition dataset + preference dataset)
                 data_batch = (observations, actions, sl_observations, sl_actions, sl_next_observations)
-                next_observations, terminals, loss_info = self.dynamics_sstep_and_forward(data_batch, preference_batch)
+                next_observations, terminals, loss_info = self.dynamics_step_and_forward(data_batch, preference_batch)
                 for _key in loss_info:
                     if 'reward_max' in _key or 'reward_min' in _key:
                         all_loss_info[_key] = loss_info[_key]

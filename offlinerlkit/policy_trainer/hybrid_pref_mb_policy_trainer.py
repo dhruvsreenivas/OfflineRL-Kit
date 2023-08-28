@@ -10,14 +10,14 @@ from tqdm import tqdm
 from collections import deque
 from offlinerlkit.buffer import ReplayBuffer, PreferenceDataset
 from offlinerlkit.utils.logger import Logger
-from offlinerlkit.policy import HybridMBPORewardLearningPolicy
+from offlinerlkit.policy import HybridRAMBORewardLearningPolicy
 
 
 # model-based policy trainer with preference-based reward learning
 class HybridPrefMBPolicyTrainer:
     def __init__(
         self,
-        policy: HybridMBPORewardLearningPolicy,
+        policy: HybridRAMBORewardLearningPolicy,
         eval_env: gym.Env,
         offline_preference_dataset: PreferenceDataset,
         online_preference_dataset: PreferenceDataset,
@@ -35,15 +35,16 @@ class HybridPrefMBPolicyTrainer:
         dynamics_update_freq: int = 0,
         gamma: float = 1.0,
         segment_length: float = 60,
+        device: str = 'cpu'
     ) -> None:
         """Hybrid preference-based model-based RL trainer."""
         self.policy = policy
         self.eval_env = eval_env
         self.offline_preference_dataset = offline_preference_dataset
         self.online_preference_dataset = online_preference_dataset
-        self.real_buffer = real_buffer
+        self.offline_transition_buffer = real_buffer
         self.fake_buffer = fake_buffer
-        self.online_buffer = online_buffer
+        self.online_transition_buffer = online_buffer
         self.logger = logger
 
         self._rollout_freq, self._rollout_batch_size, \
@@ -58,6 +59,7 @@ class HybridPrefMBPolicyTrainer:
         self.lr_scheduler = lr_scheduler
         self.gamma = gamma
         self.segment_length = segment_length
+        self.device = device
 
     def train(self) -> Dict[str, float]:
         start_time = time.time()
@@ -73,7 +75,7 @@ class HybridPrefMBPolicyTrainer:
             pbar = tqdm(range(self._step_per_epoch), desc=f"Epoch #{e}/{self._epoch}")
             for it in pbar:
                 if num_timesteps % self._rollout_freq == 0:
-                    init_obss = self.real_buffer.sample(self._rollout_batch_size)["observations"].cpu().numpy()
+                    init_obss = self.offline_transition_buffer.sample(self._rollout_batch_size)["observations"].cpu().numpy()
                     rollout_transitions, rollout_info = self.policy.rollout(init_obss, self._rollout_length)
                     self.fake_buffer.add_batch(**rollout_transitions)
                     self.logger.log(
@@ -85,7 +87,7 @@ class HybridPrefMBPolicyTrainer:
 
                 real_sample_size = int(self._batch_size * self._real_ratio)
                 fake_sample_size = self._batch_size - real_sample_size
-                real_batch = self.real_buffer.sample(batch_size=real_sample_size)
+                real_batch = self.offline_transition_buffer.sample(batch_size=real_sample_size)
                 # update real_batch reward
                 fake_batch = self.fake_buffer.sample(batch_size=fake_sample_size)
                 batch = {"real": real_batch, "fake": fake_batch}
@@ -100,9 +102,15 @@ class HybridPrefMBPolicyTrainer:
                     self._add_online_data(
                         preference_batch_size=self.policy._online_preference_ratio * self.policy._reward_batch_size,
                         segment_length=self.segment_length, 
-                        device=self.offline_preference_dataset.sample(1)['observations1'].device)
+                        device=self.device
+                    )
                     
-                    dynamics_update_info = self.policy.update_dynamics_and_reward(self.real_buffer, self.online_buffer, self.offline_preference_dataset, self.online_preference_dataset)
+                    dynamics_update_info = self.policy.update_dynamics_and_reward(
+                        offline_transition_buffer=self.offline_transition_buffer,
+                        online_transition_buffer=self.online_transition_buffer,
+                        offline_preference_buffer=self.offline_preference_dataset,
+                        online_preference_buffer=self.online_preference_dataset
+                    )
                     for k, v in dynamics_update_info.items():
                         self.logger.logkv_mean(k, v)
                 
@@ -164,7 +172,7 @@ class HybridPrefMBPolicyTrainer:
         }
     
     def _add_online_data(self, preference_batch_size, segment_length, device) -> Dict[str, torch.Tensor]:
-        # collect 2 * batch_size trajectories in total. If collected trajectory is smaller than segment size, recollect. 
+        # collect 2 * preference_batch_size trajectories in total. If collected trajectory is smaller than segment size, recollect. 
         # Add all data to self.online_buffer. Return online preference dataset with size of preference_batch_size.
         
         self.policy.eval()
@@ -199,7 +207,7 @@ class HybridPrefMBPolicyTrainer:
                     term_lst = np.vstack(term_lst)
                 
                     ## update tp online data buffer ## 
-                    self.online_buffer.add_batch(
+                    self.online_transition_buffer.add_batch(
                         obss=obs_lst,
                         next_obss=next_obs_lst,
                         actions=act_lst,
