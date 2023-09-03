@@ -357,6 +357,22 @@ class TrajectoryBuffer:
     @property
     def traj_rewards(self):
         return [np.sum(traj_r) for traj_r in self.trajs["rewards"]]
+    
+    def add_batch(
+        self,
+        observations: np.ndarray,
+        actions: np.ndarray,
+        next_observations: np.ndarray,
+        terminals: np.ndarray,
+        rewards: np.ndarray,
+    ) -> None:
+        # input observations should be size (num_trajs, traj_len, obs_dim), other parameters follows the same pattern
+        # self.trajs['observations'] is of size (num_trajs, traj_len, obs_dim), other parameters follows the same pattern
+        self.trajs["observations"].append(observations)
+        self.trajs["actions"].append(actions)
+        self.trajs["next_observations"].append(next_observations)
+        self.trajs["terminals"].append(terminals)
+        self.trajs["rewards"].append(rewards)
         
     def sample(self, batch_size: int) -> Dict[str, torch.Tensor]:
         """
@@ -532,8 +548,48 @@ class TrajectoryBuffer:
         
         # set as class variable
         self.snippet_preference_dataset = offline_dataset
+
+    def sample_snippet_fixed_preference_dataset(self, num_pairs: int, sample_label: bool = True) -> None:
+        '''
+        Like generate_sniped_preference_dataset except it will always get snipets of length self.segment_length
+        All trajs with length smaller than that are ignored. 
+        '''
+        datapoints = []
+
+        #Grab indices of trajs that are >= seg length
+        indices = (np.array(self.traj_lengths) >= self.segment_length).nonzero()[0]        
+        for _ in range(num_pairs):
+            # sample a pair of trajectories
+            traj_idx1 = np.random.choice(indices)
+            traj_idx2 = np.random.choice(indices)
+            
+            # sample snippets from each trajectory
+            start_idx1 = np.random.randint(0, self.traj_lengths[traj_idx1] - self.segment_length) if self.traj_lengths[traj_idx1] > self.segment_length else 0
+            start_idx2 = np.random.randint(0, self.traj_lengths[traj_idx2] - self.segment_length) if self.traj_lengths[traj_idx2] > self.segment_length else 0
+            
+            snip1 = {
+                k: v[traj_idx1][start_idx1 : start_idx1 + self.segment_length]
+                for k, v in self.trajs.items()
+            }
+            snip2 = {
+                k: v[traj_idx2][start_idx2 : start_idx2 + self.segment_length]
+                for k, v in self.trajs.items()
+            }
+            
+            # get label based off of BTL model of reward
+            rew1 = np.sum(snip1["rewards"])
+            rew2 = np.sum(snip2["rewards"])
+            if sample_label:
+                diff = torch.sigmoid(torch.tensor(rew1 - rew2))
+                label = torch.bernoulli(diff) # this is the label -> 0 if 1 < 2, 1 if not
+            else:
+                label = torch.tensor(1.0) if rew1 > rew2 else torch.tensor(0)
+            
+            datapoints.append((snip1, snip2, label))
+ 
+        return PreferenceDataset(datapoints, self.device)
         
-    def generate_snippet_fixed_preference_dataset(self, name: str, sample_label: bool = True) -> None:
+    def generate_snippet_fixed_preference_dataset(self, name: str, sample_label: bool = True, save_dataset: bool = True) -> None:
         '''
         Like generate_sniped_preference_dataset except it will always get snipets of length self.segment_length
         All trajs with length smaller than that are ignored. 

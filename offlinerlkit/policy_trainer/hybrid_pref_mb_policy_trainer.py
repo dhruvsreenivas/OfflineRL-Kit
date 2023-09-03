@@ -8,7 +8,7 @@ import gym
 from typing import Optional, Dict, List, Tuple
 from tqdm import tqdm
 from collections import deque
-from offlinerlkit.buffer import ReplayBuffer, PreferenceDataset
+from offlinerlkit.buffer import ReplayBuffer, PreferenceDataset, TrajectoryBuffer
 from offlinerlkit.utils.logger import Logger
 from offlinerlkit.policy import HybridRAMBORewardLearningPolicy
 
@@ -20,7 +20,7 @@ class HybridPrefMBPolicyTrainer:
         policy: HybridRAMBORewardLearningPolicy,
         eval_env: gym.Env,
         offline_preference_dataset: PreferenceDataset,
-        online_preference_dataset: PreferenceDataset,
+        online_trajectory_buffer: TrajectoryBuffer,
         real_buffer: ReplayBuffer,
         fake_buffer: ReplayBuffer,
         online_buffer: ReplayBuffer,
@@ -36,13 +36,15 @@ class HybridPrefMBPolicyTrainer:
         gamma: float = 1.0,
         segment_length: float = 60,
         device: str = 'cpu',
+        num_online_traj_batch_size: int = 1,
         num_online_preference_batch_size: int = 1,
+        compare_with_latest_segment: bool = False,
     ) -> None:
         """Hybrid preference-based model-based RL trainer."""
         self.policy = policy
         self.eval_env = eval_env
         self.offline_preference_dataset = offline_preference_dataset
-        self.online_preference_dataset = online_preference_dataset
+        self.online_trajectory_buffer = online_trajectory_buffer
         self.offline_transition_buffer = real_buffer
         self.fake_buffer = fake_buffer
         self.online_transition_buffer = online_buffer
@@ -61,7 +63,8 @@ class HybridPrefMBPolicyTrainer:
         self.gamma = gamma
         self.segment_length = segment_length
         self.device = device
-        self._num_online_preference_batch_size = num_online_preference_batch_size
+        self._num_online_traj_batch_size = num_online_traj_batch_size
+        self._compare_with_latest_segment = compare_with_latest_segment
 
     def train(self) -> Dict[str, float]:
         start_time = time.time()
@@ -101,17 +104,17 @@ class HybridPrefMBPolicyTrainer:
                 
                 # update the dynamics if necessary
                 if 0 < self._dynamics_update_freq and (num_timesteps+1)%self._dynamics_update_freq == 0:
-                    self._add_online_data(
-                        preference_batch_size=self._num_online_preference_batch_size,
-                        segment_length=self.segment_length, 
-                        device=self.device
+                    self._add_online_data(num_trajs=self._num_online_traj_batch_size)
+                    online_preference_dataset = self.online_trajectory_buffer.sample_snippet_fixed_preference_dataset(
+                        num_pairs=self.online_trajectory_buffer.num_trajs,
+                        sample_label=False,
                     )
                     
                     dynamics_update_info = self.policy.update_dynamics_and_reward(
                         offline_transition_buffer=self.offline_transition_buffer,
                         online_transition_buffer=self.online_transition_buffer,
                         offline_preference_buffer=self.offline_preference_dataset,
-                        online_preference_buffer=self.online_preference_dataset
+                        online_preference_buffer=online_preference_dataset
                     )
                     for k, v in dynamics_update_info.items():
                         self.logger.logkv_mean(k, v)
@@ -173,19 +176,15 @@ class HybridPrefMBPolicyTrainer:
             "eval/episode_length": [ep_info["episode_length"] for ep_info in eval_ep_info_buffer]
         }
     
-    def _add_online_data(self, preference_batch_size, segment_length, device) -> Dict[str, torch.Tensor]:
-        # collect 2 * preference_batch_size trajectories in total. If collected trajectory is smaller than segment size, recollect. 
-        # Add all data to self.online_buffer. Return online preference dataset with size of preference_batch_size.
+    def _add_online_data(self, num_trajs) -> Dict[str, torch.Tensor]:
+        # collect num_trajs trajectories in total. If collected trajectory is smaller than segment size, recollect. 
+        # Add all data to self.online_buffer. Add all trajectories into self.online_trajectory_buffer
         
         self.policy.eval()
         obs = self.eval_env.reset()
-        preference_batch = {}
-        obs_1, act_1, next_obs_1, term1, obs_2, act_2, next_obs_2, term2, label = [], [], [], [], [], [], [], [], []
-        current_batch_size = 0
+        collected_num_trajs = 0
 
-        traj = 0
-        reward_1, reward_2 = 0, 0
-        while current_batch_size < preference_batch_size:
+        while collected_num_trajs < num_trajs:
             obs = self.eval_env.reset()
             obs_lst, act_lst, next_obs_lst, reward_lst, term_lst = [], [], [], [], []
             while True:
@@ -208,7 +207,7 @@ class HybridPrefMBPolicyTrainer:
                     reward_lst = np.vstack(reward_lst).astype(np.float32)
                     term_lst = np.vstack(term_lst)
                 
-                    ## update tp online data buffer ## 
+                    ## update tp online transition buffer ## 
                     self.online_transition_buffer.add_batch(
                         obss=obs_lst,
                         next_obss=next_obs_lst,
@@ -217,55 +216,15 @@ class HybridPrefMBPolicyTrainer:
                         terminals=term_lst,
                     )
 
-                    ## update to online preference dataset ##
-                    # convert data to torch arrays
-                    obs_lst = torch.tensor(obs_lst, device=device)
-                    act_lst = torch.tensor(act_lst, device=device)
-                    next_obs_lst = torch.tensor(next_obs_lst, device=device)
-                    reward_lst = torch.tensor(reward_lst, device=device)
-                    term_lst = torch.tensor(term_lst, device=device)
+                    ## update to online trajectory buffer ##
+                    self.online_trajectory_buffer.add_batch(
+                        observations=obs_lst,
+                        next_observations=next_obs_lst,
+                        actions=act_lst,
+                        rewards=reward_lst,
+                        terminals=term_lst.squeeze(),
+                    )
 
-                    # if trajectory length is smaller than segment length, resample a trajectory
-                    if obs_lst.shape[0] < segment_length:
-                        break
-                    
-                    # sample segment from the history and compute the reward
-                    start_idx = torch.randint(0, obs_lst.shape[0] - segment_length, (1,)) if obs_lst.shape[0] > segment_length else 0
-                    if traj == 0: # collected the first trajectory, need to collect a second one for comparison
-                        obs_1.append(obs_lst[start_idx : start_idx + segment_length])
-                        act_1.append(act_lst[start_idx : start_idx + segment_length])
-                        next_obs_1.append(next_obs_lst[start_idx : start_idx + segment_length])
-                        term1.append(term_lst[start_idx : start_idx + segment_length])
-                        # calculate discounted reward of the segment
-                        discount = (self.gamma ** torch.arange(segment_length))
-                        reward_1 = (reward_lst[start_idx : start_idx + segment_length] * discount.to(device)).sum()
-                        traj = 1
-                    else: # collected 2 trajectories, do comparison and add to preference dataset
-                        obs_2.append(obs_lst[start_idx : start_idx + segment_length])
-                        act_2.append(act_lst[start_idx : start_idx + segment_length])
-                        next_obs_2.append(next_obs_lst[start_idx : start_idx + segment_length])
-                        term2.append(term_lst[start_idx : start_idx + segment_length])
-                        # calculate discounted reward of the segment
-                        discount = (self.gamma ** torch.arange(segment_length))
-                        reward_2 = (reward_lst[start_idx : start_idx + segment_length] * discount.to(device)).sum()
-                        # add label
-                        if reward_1 > reward_2:
-                            label.append(torch.tensor(1, device=device))
-                        else:
-                            label.append(torch.tensor(0, device=device))
-                        traj = 0
-                        current_batch_size += 1 # finish collecting two trajectories and the label
+                    collected_num_trajs += 1
                     break
-        
-        # stack observations into size (online_buffer_size, obs_dim)
-        preference_batch["observations1"] = torch.stack(obs_1, dim=0).squeeze()
-        preference_batch["actions1"] = torch.stack(act_1, dim=0).squeeze()
-        preference_batch["next_observations1"] = torch.stack(next_obs_1, dim=0).squeeze()
-        preference_batch["terminals1"] = torch.stack(term1, dim=0).squeeze()
-        preference_batch["observations2"] = torch.stack(obs_2, dim=0).squeeze()
-        preference_batch["actions2"] = torch.stack(act_2, dim=0).squeeze()
-        preference_batch["next_observations2"] = torch.stack(next_obs_2, dim=0).squeeze()
-        preference_batch["terminals2"] = torch.stack(term2, dim=0).squeeze()
-        preference_batch["label"] = torch.stack(label, dim=0).squeeze()
-        self.online_preference_dataset.add_batch(**preference_batch)
         return

@@ -17,7 +17,7 @@ from offlinerlkit.dynamics import EnsembleDynamics
 from offlinerlkit.rewards import EnsembleReward
 from offlinerlkit.utils.scaler import StandardScaler
 from offlinerlkit.utils.termination_fns import get_termination_fn, obs_unnormalization
-from offlinerlkit.buffer import ReplayBuffer, PreferenceDataset
+from offlinerlkit.buffer import ReplayBuffer, PreferenceDataset, TrajectoryBuffer
 from offlinerlkit.utils.logger import Logger, make_log_dirs
 from offlinerlkit.policy_trainer import HybridPrefMBPolicyTrainer
 from offlinerlkit.policy import HybridRAMBORewardLearningPolicy
@@ -110,6 +110,7 @@ def get_args():
     parser.add_argument("--fix-logvar-range", type=bool, default=False) # fixed min and max logvar for dynamics
     parser.add_argument("--online_transition_ratio", type=float, default=0.5)
     parser.add_argument("--online_preference_ratio", type=float, default=0.5)
+    parser.add_argument("--compare_with_latest_segment", type=bool, default=True) # For reward model learning, preference is based on comparison between one segment from lastest policy and one from replay buffer
     return parser.parse_args()
 
 
@@ -325,13 +326,24 @@ def train(args=get_args()):
     logger = Logger(log_dirs, output_config)
     logger.log_hyperparameters(vars(args))
     
-    online_preference_dataset = PreferenceDataset(offline_data=[], device=args.device)
+    # online_preference_dataset = PreferenceDataset(offline_data=[], device=args.device)
+    online_trajectory_buffer = TrajectoryBuffer(
+        dataset={
+            "observations": [],
+            "actions": [],
+            "next_observations": [],
+            "terminals": [],
+            "rewards": []
+        },
+        segment_length=args.segment_length,
+        device=args.device,
+    )
     # create policy trainer
     policy_trainer = HybridPrefMBPolicyTrainer(
         policy=policy,
         eval_env=env,
         offline_preference_dataset=pref_dataset,
-        online_preference_dataset=online_preference_dataset,
+        online_trajectory_buffer=online_trajectory_buffer,
         real_buffer=real_buffer,
         fake_buffer=fake_buffer,
         online_buffer=online_buffer,
@@ -345,7 +357,8 @@ def train(args=get_args()):
         real_ratio=args.real_ratio,
         gamma=args.gamma,
         segment_length=args.segment_length,
-        device=args.device
+        device=args.device,
+        compare_with_latest_segment=args.compare_with_latest_segment,
     )
 
     # train pure dynamics
