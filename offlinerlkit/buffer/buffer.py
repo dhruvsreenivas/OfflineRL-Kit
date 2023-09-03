@@ -274,11 +274,6 @@ class TrajectoryBuffer:
         self.device = torch.device(device)
         self.segment_length = segment_length
         
-        self.obs_shape = dataset["observations"].shape[1]
-        self.obs_dtype = dataset["observations"].dtype
-        self.action_dim = dataset["actions"].shape[1]
-        self.action_dtype = dataset["actions"].dtype
-        
         # splitting into trajectories (modified from IQL repo)
         trajs = defaultdict(list)
         
