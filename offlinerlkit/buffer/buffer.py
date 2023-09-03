@@ -1,3 +1,4 @@
+import random
 import numpy as np
 import torch
 
@@ -544,7 +545,7 @@ class TrajectoryBuffer:
         # set as class variable
         self.snippet_preference_dataset = offline_dataset
 
-    def sample_snippet_fixed_preference_dataset(self, num_pairs: int, sample_label: bool = True) -> None:
+    def sample_snippet_fixed_preference_dataset(self, num_pairs: int, sample_label: bool = True, mandatory_idx = None) -> None:
         '''
         Like generate_sniped_preference_dataset except it will always get snipets of length self.segment_length
         All trajs with length smaller than that are ignored. 
@@ -554,9 +555,21 @@ class TrajectoryBuffer:
         #Grab indices of trajs that are >= seg length
         indices = (np.array(self.traj_lengths) >= self.segment_length).nonzero()[0]        
         for _ in range(num_pairs):
-            # sample a pair of trajectories
-            traj_idx1 = np.random.choice(indices)
-            traj_idx2 = np.random.choice(indices)
+            if mandatory_idx is not None:
+                rest_idx = np.array([idx for idx in indices if idx not in mandatory_idx])
+                rest_idx = indices if len(rest_idx) == 0 else rest_idx
+                # one traj should be sampled from the given mandatory indexes
+                use_idx1 = random.choice([True, False])
+                if use_idx1:
+                    traj_idx1 = np.random.choice(mandatory_idx)
+                    traj_idx2 = np.random.choice(rest_idx)
+                else:
+                    traj_idx1 = np.random.choice(rest_idx)
+                    traj_idx2 = np.random.choice(mandatory_idx)
+            else:
+                # sample a pair of trajectories
+                traj_idx1 = np.random.choice(indices)
+                traj_idx2 = np.random.choice(indices)
             
             # sample snippets from each trajectory
             start_idx1 = np.random.randint(0, self.traj_lengths[traj_idx1] - self.segment_length) if self.traj_lengths[traj_idx1] > self.segment_length else 0

@@ -37,7 +37,6 @@ class HybridPrefMBPolicyTrainer:
         segment_length: float = 60,
         device: str = 'cpu',
         num_online_traj_batch_size: int = 1,
-        num_online_preference_batch_size: int = 1,
         compare_with_latest_segment: bool = False,
     ) -> None:
         """Hybrid preference-based model-based RL trainer."""
@@ -105,9 +104,17 @@ class HybridPrefMBPolicyTrainer:
                 # update the dynamics if necessary
                 if 0 < self._dynamics_update_freq and (num_timesteps+1)%self._dynamics_update_freq == 0:
                     self._add_online_data(num_trajs=self._num_online_traj_batch_size)
+                    if self._compare_with_latest_segment:
+                        # use the trajectories from the latest policy model
+                        # the trajectories is appened to the end of trajectory buffer every time we collect online data
+                        # so we sample from the last ${self._num_online_traj_batch_size} idxes, e.g. [-5, -4, -3, -2, -1] if we collect 5 trajectories at a time
+                        latest_traj_idx = np.arange(-self._num_online_traj_batch_size, 0) % self.online_trajectory_buffer.num_trajs
+                    else:
+                        latest_traj_idx = None
                     online_preference_dataset = self.online_trajectory_buffer.sample_snippet_fixed_preference_dataset(
                         num_pairs=self.online_trajectory_buffer.num_trajs,
                         sample_label=False,
+                        mandatory_idx=latest_traj_idx
                     )
                     
                     dynamics_update_info = self.policy.update_dynamics_and_reward(
