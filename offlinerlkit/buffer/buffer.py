@@ -597,7 +597,7 @@ class TrajectoryBuffer:
  
         return PreferenceDataset(datapoints, self.device)
         
-    def generate_snippet_fixed_preference_dataset(self, name: str, sample_label: bool = True, save_dataset: bool = True) -> None:
+    def generate_snippet_fixed_preference_dataset(self, name: str, sample_label: bool = True) -> None:
         '''
         Like generate_sniped_preference_dataset except it will always get snipets of length self.segment_length
         All trajs with length smaller than that are ignored. 
